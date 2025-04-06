@@ -2,7 +2,7 @@ const std = @import("std");
 const print = std.debug.print;
 const assert = std.debug.assert;
 
-const muscle = @import("../muscle.zig");
+const muscle = @import("muscle");
 const page = @import("./pager.zig");
 const PageNumber = page.PageNumber;
 const SlotIndex = page.SlotIndex;
@@ -167,5 +167,4 @@ pub const OverflowPage = extern struct {
     }
 };
 
-const PageTag = enum { DBMetadataPage, Page, OverflowPage };
-pub const PageType = union(PageTag) { DBMetadataPage: DBMetadataPage, Page: Page, OverflowPage: OverflowPage };
+pub const PageType = enum { DBMetadataPage, Page, OverflowPage };

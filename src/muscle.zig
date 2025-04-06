@@ -5,15 +5,15 @@ pub const Table = struct {
     row_id: u32,
     // table name
     name: []const u8,
-    columns: []Column,
+    columns: []const Column,
     // index is outside column because we may have compound indexes
-    indexes: []Index,
+    indexes: []const Index,
 };
 
 pub const Column = struct {
     name: []const u8,
     data_type: DataType,
-    constraints: []ColumnConstraint,
+    constraints: []const ColumnConstraint,
 };
 pub const DataType = enum {
     Int,

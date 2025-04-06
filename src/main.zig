@@ -1,20 +1,23 @@
 const std = @import("std");
-const muscle = @import("muscle.zig");
+const muscle = @import("muscle");
 const ExecutionEngine = @import("./execution_engine.zig").ExecutionEngine;
+const Query = @import("./execution_engine.zig").Query;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     var engine = try ExecutionEngine.init(allocator, "/Users/shupawar/x/muscledb/muscle");
-    var columns_constraints = [_]muscle.ColumnConstraint{ .PrimaryKey, .Unique };
-    var columns = [_]muscle.Column{
+    const columns_constraints = [_]muscle.ColumnConstraint{ .PrimaryKey, .Unique };
+    const columns = [_]muscle.Column{
         muscle.Column{
             .name = "column 1",
             .data_type = .Varchar,
             .constraints = &columns_constraints,
         },
     };
-    try engine.create_table("users", &columns);
+
+    const query: Query = Query{ .CreateTable = .{ .table_name = "users", .columns = &columns } };
+    try engine.execute_query(query);
 
     defer {
         const deinit_status = gpa.deinit();

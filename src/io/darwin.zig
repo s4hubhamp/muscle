@@ -1,3 +1,8 @@
+const std = @import("std");
+const fs = std.fs;
+const File = fs.File;
+const pager = @import("../btree/pager.zig");
+
 pub const IO = struct {
     file: File,
 
@@ -43,8 +48,3 @@ pub const IO = struct {
         self.file.close();
     }
 };
-
-const std = @import("std");
-const fs = std.fs;
-const File = fs.File;
-const pager = @import("../btree/pager.zig");
