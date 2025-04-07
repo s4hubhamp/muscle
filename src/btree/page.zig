@@ -29,12 +29,12 @@ pub const DBMetadataPage = extern struct {
             .total_pages = 1,
             .free_pages = 0,
             .first_free_page = 0,
-            .tables_len = 2,
+            .tables_len = 2, // this is number of characters in json
             .tables = [_]u8{ '[', ']' } ++ [_]u8{0} ** 4078,
         };
     }
 
-    pub fn parse_tables(self: *DBMetadataPage, allocator: std.mem.Allocator) !std.json.Parsed([]muscle.Table) {
+    pub fn parse_tables(self: *const DBMetadataPage, allocator: std.mem.Allocator) !std.json.Parsed([]muscle.Table) {
         return std.json.parseFromSlice(
             []muscle.Table,
             allocator,
@@ -166,5 +166,3 @@ pub const OverflowPage = extern struct {
         return OverflowPage{ .size = 0, .next = 0, .content = [_]u8{0} ** 4088 };
     }
 };
-
-pub const PageType = enum { DBMetadataPage, Page, OverflowPage };

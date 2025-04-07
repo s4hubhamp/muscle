@@ -1,4 +1,5 @@
 const std = @import("std");
+const posix = std.posix;
 const fs = std.fs;
 const File = fs.File;
 const pager = @import("../btree/pager.zig");
@@ -7,7 +8,7 @@ pub const IO = struct {
     file: File,
 
     // if the provided path is incorrect init may fail
-    pub fn init(absolute_path: []const u8) !IO {
+    pub fn init(absolute_path: []const u8) File.OpenError!IO {
         // first try to check if the database file exists or not
         // if it does not exists we need to create it and also we need to create metadata page
         const file = fs.openFileAbsolute(
@@ -32,16 +33,21 @@ pub const IO = struct {
         return IO{ .file = file };
     }
 
+    const ReadError = posix.ReadError || posix.SeekError;
     // read page and return number of bytes read into buffer
-    pub fn read(self: *IO, page_number: u32, buffer: []u8) !usize {
+    pub fn read(self: *IO, page_number: u32, buffer: []u8) ReadError!usize {
         // since every page size is supposed to be same as 8Kb
         try self.file.seekTo(page_number * pager.PAGE_SIZE);
         return try self.file.read(buffer);
     }
 
-    pub fn write(self: *IO, page_number: u32, buffer: []u8) !usize {
+    const WriteError = posix.WriteError || posix.SeekError;
+    pub fn write(self: *IO, page_number: u32, buffer: []const u8) WriteError!usize {
         try self.file.seekTo(page_number * pager.PAGE_SIZE);
-        return try self.file.write(buffer);
+        const written = try self.file.write(buffer);
+        // for now we are not doing retries so asserting
+        std.debug.assert(written == buffer.len);
+        return written;
     }
 
     pub fn deinit(self: IO) void {

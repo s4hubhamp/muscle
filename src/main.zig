@@ -6,7 +6,8 @@ const Query = @import("./execution_engine.zig").Query;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    var engine = try ExecutionEngine.init(allocator, "/Users/shupawar/x/muscledb/muscle");
+    var engine = try ExecutionEngine.init(allocator, "/Users/shupawar/x/muscle/muscle");
+
     const columns_constraints = [_]muscle.ColumnConstraint{ .PrimaryKey, .Unique };
     const columns = [_]muscle.Column{
         muscle.Column{
@@ -15,9 +16,11 @@ pub fn main() !void {
             .constraints = &columns_constraints,
         },
     };
+    const create_table_query: Query = Query{ .CreateTable = .{ .table_name = "users", .columns = &columns } };
+    try engine.execute_query(create_table_query);
 
-    const query: Query = Query{ .CreateTable = .{ .table_name = "users", .columns = &columns } };
-    try engine.execute_query(query);
+    //const delete_table_query = Query{ .DropTable = .{ .table_name = "sometable" } };
+    //try engine.execute_query(delete_table_query);
 
     defer {
         const deinit_status = gpa.deinit();
@@ -31,22 +34,8 @@ pub fn main() !void {
     //    std.debug.print("\tAlignment for structs\n", .{});
 
     //    const S = extern struct {
-    //        // length of slot array
-    //        num_slots: u16 = 0,
-    //        // Offset of the last inserted cell counting from the start
-    //        last_used_offset: u16 = 0,
-    //        // free space is 4096 - size - (size of header fields = 16)
-    //        // used to determine whether page is underflow or not
-    //        free_space: u16 = 0,
-    //        // size of the content only
-    //        // used to determine whether page is overflow or not
-    //        // this tells about the size that is in use.
-    //        // If we have some empty cells in the middle those cells will not account in the calculation of the size
-    //        size: u16 = 0,
-    //        // for internal btree node the rightmost child node
-    //        right_child: u32 = 0, // page number
-    //        // content is slot array + cells
-    //        content: [4084]u8 = [_]u8{0} ** 4084,
+    //        n_pages: u32 = 0,
+    //        pages: [1023]u32 = [_]u32{0} ** 1023,
     //    };
 
     //    // packed structs alignment is equal to alignment of backing integer so it is @alignOf(u160) = 16

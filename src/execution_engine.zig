@@ -11,26 +11,50 @@ pub const ExecutionEngine = struct {
     pager: Pager,
 
     pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !ExecutionEngine {
+        var pager = try Pager.init(database_file_path, allocator);
+
+        // call rollback to sync if we had crashed earlier
+        try pager.rollback();
+
         return ExecutionEngine{
             .allocator = allocator,
-            .pager = try Pager.init(database_file_path, allocator),
+            .pager = pager,
         };
     }
 
     pub fn execute_query(self: *ExecutionEngine, query: Query) !void {
+        // true for update queries
         var commit = false;
+        // for update queries, true to denote rollback partially done updates
+        var rollback = false;
+        var client_err: anyerror = undefined;
+
         switch (query) {
             Query.CreateTable => |payload| {
-                try self.create_table(payload);
                 commit = true;
+                self.create_table(payload) catch |err| {
+                    client_err = err;
+                    rollback = true;
+                };
+            },
+            Query.DropTable => |payload| {
+                commit = true;
+                self.drop_table(payload) catch |err| {
+                    client_err = err;
+                    rollback = true;
+                };
             },
             else => @panic("not implemented"),
         }
 
-        if (commit) {
-            // commit. Failure here means that rollback is also failed
-            // we don't want to catch the failure in rollback
-            try self.pager.commit();
+        if (rollback) {
+            print("Failed update query with error \"{}\". Calling Rollback.\n", .{client_err});
+            // we might have done some partial updates and we need to rollback
+            try self.pager.rollback();
+        } else if (commit) {
+            // if we fail while doing last update then?
+            // Is this recoverable? Should we call rollback? TODO
+            try self.pager.commit(true);
         }
     }
 
@@ -38,7 +62,15 @@ pub const ExecutionEngine = struct {
         const table_name = payload.table_name;
         const columns = payload.columns;
 
-        var page_zero = try self.pager.get_metadata_page();
+        //print("pager state 1: {any}\n", .{.{
+        //    .cache = self.pager.cache,
+        //    .dirty = self.pager.dirty_pages,
+        //    .n_dirty = self.pager.n_dirty,
+        //    .journal = self.pager.journal.pages,
+        //    .n_recorded = self.pager.journal.n_recorded,
+        //}});
+
+        var page_zero = self.pager.get_metadata_page().*; // .* makes copy
         const parsed = try page_zero.parse_tables(self.allocator);
         var tables_list = std.ArrayList(muscle.Table).init(self.allocator);
 
@@ -49,7 +81,7 @@ pub const ExecutionEngine = struct {
 
         for (parsed.value) |table| {
             if (std.mem.eql(u8, table.name, table_name)) {
-                return error.DuplicateTable;
+                return error.DuplicateTableName;
             }
         }
 
@@ -66,6 +98,43 @@ pub const ExecutionEngine = struct {
 
         // update tables
         try page_zero.set_tables(self.allocator, tables_list.items[0..]);
+        // put updates into cache
+        try self.pager.update_page(0, std.mem.toBytes(page_zero));
+    }
+
+    fn drop_table(self: *ExecutionEngine, payload: DropTablePayload) !void {
+        const table_name = payload.table_name;
+
+        var page_zero = self.pager.get_metadata_page().*; // makes a copy
+        const parsed = try page_zero.parse_tables(self.allocator);
+        var tables_list = std.ArrayList(muscle.Table).init(self.allocator);
+
+        defer {
+            parsed.deinit();
+        }
+
+        var index: ?usize = null;
+        for (parsed.value, 0..) |table, i| {
+            if (std.mem.eql(u8, table.name, table_name)) {
+                index = i;
+            }
+        }
+
+        if (index == null) {
+            return error.TableNotFound;
+        }
+
+        if (index == 0) {
+            try tables_list.appendSlice(parsed.value[1..]);
+        } else {
+            try tables_list.appendSlice(parsed.value[0..index.?]);
+            try tables_list.appendSlice(parsed.value[index.? + 1 ..]);
+        }
+
+        // update tables
+        try page_zero.set_tables(self.allocator, tables_list.items[0..]);
+        // put updates into cache
+        try self.pager.update_page(0, std.mem.toBytes(page_zero));
     }
 };
 
@@ -74,7 +143,9 @@ const CreateTablePayload = struct {
     columns: []const muscle.Column,
 };
 
-const DropTablePayload = struct {};
+const DropTablePayload = struct {
+    table_name: []const u8,
+};
 const DropIndexPayload = struct {};
 pub const Query = union(enum) {
     CreateTable: CreateTablePayload,
