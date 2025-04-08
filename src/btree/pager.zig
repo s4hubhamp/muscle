@@ -15,8 +15,22 @@ pub const SlotIndex = u16;
 
 // constants
 pub const PAGE_SIZE: u16 = 4096;
+
 // number of pages we can have at a time inside our cache
-const MAX_CACHE_SIZE = 100;
+const MAX_CACHE_SIZE = 69;
+
+// When this count is hit, we will commit before proceeding to next query
+// various data structures below are optmized based on this number. Since this is a
+// small and well known number we've choosen Arrays instead of HashMaps since for smaller
+// number of elements arrays perform better or same as hash maps and we can have
+// *static* allocations.
+const MAX_DIRTY_COUNT_BEFORE_COMMIT = 64;
+
+comptime {
+    // This is important.
+    // We need to evict non dirty pages and thus max number of dirty pages should be always lesser
+    assert(MAX_DIRTY_COUNT_BEFORE_COMMIT < MAX_CACHE_SIZE);
+}
 
 // Pager is responsible to manage pages of database file.
 // It's job is to read and interpret the page by page number
@@ -27,10 +41,7 @@ pub const Pager = struct {
     allocator: std.mem.Allocator,
     io: IO,
     cache: PagerCache,
-    // when this gets full we will write to disk
-    // It's important that the capacity of this array is always equals to max pages in cache
-    dirty_pages: [MAX_CACHE_SIZE]u32 = undefined,
-    n_dirty: usize = 0,
+    dirty_pages: std.BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT),
     journal: Journal,
 
     pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !Pager {
@@ -48,16 +59,24 @@ pub const Pager = struct {
             _ = try io.write(0, &metadata_buffer);
         }
 
-        var cache = PagerCache.init();
+        var dirty_pages = try std.BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT).init(0);
+        var cache = try PagerCache.init();
         // insert metadata page into cache
-        try cache.put(0, metadata_buffer);
+        try cache.put(0, metadata_buffer, dirty_pages.constSlice());
 
+        // allocator for arrays
         return Pager{
             .allocator = allocator,
             .io = io,
+            .dirty_pages = dirty_pages,
             .cache = cache,
             .journal = try Journal.init(database_file_path),
         };
+    }
+
+    pub fn deinit(self: *Pager) void {
+        // @cleanup
+        _ = self;
     }
 
     // commit gets called when we are in the middle of update and we reach dirty pages capacity
@@ -72,59 +91,67 @@ pub const Pager = struct {
     // execution_completed tells us that this is the call from execution engine, which means that need to
     // clear our journal file after updating database file.
     pub fn commit(self: *Pager, execution_completed: bool) !void {
-        if (self.n_dirty == 0) {
+        // for update queries even if query did not update any rows, commit is still
+        // called by execution engine.
+        if (self.dirty_pages.len == 0) {
             print("Nothing to commit returning\n", .{});
             return;
         }
 
         // persist journal
-        try self.journal.persist();
+        self.journal.persist() catch {
+            return error.JournalError;
+        };
 
         // sort for sequential io
-        std.mem.sort(u32, self.dirty_pages[0..self.n_dirty], {}, comptime std.sort.asc(u32));
-        for (self.dirty_pages[0..self.n_dirty]) |page_number| {
+        std.mem.sort(u32, self.dirty_pages.slice(), {}, comptime std.sort.asc(u32));
+        for (self.dirty_pages.slice()) |page_number| {
             _ = self.io.write(
                 page_number,
                 std.mem.asBytes(self.cache.get(page_number).?),
             ) catch |io_err| {
-                print("Failed to save page {} calling rollback.\n", .{page_number});
-                try self.rollback();
-                // stop the process
+                print("Failed to save page {} during commit.\n", .{page_number});
                 return io_err;
             };
         }
 
-        self.dirty_pages = undefined;
-        self.n_dirty = 0;
+        // clear dirty pages
+        self.dirty_pages.clear();
 
-        if (execution_completed) try self.journal.clear();
+        if (execution_completed) self.journal.clear() catch {
+            return error.JournalError;
+        };
 
         print("Commit successfull\n", .{});
     }
 
     // Moves the original page copies from the journal file back to the database file.
     pub fn rollback(self: *Pager) !void {
-        var offset: usize = 0;
+        var n_reverted: u32 = 0;
+        var offset: u32 = 0;
         while (true) {
             // TODO sequential io // ran into simd error when trying earlier
             // https://chatgpt.com/share/67f2613a-19e0-8000-b8a8-af6aa0fa5725
-            var results = try self.journal.get_original_pages(offset);
+            var results = try self.journal.batch_get_original_pages(offset);
             if (results.n_read == 0) break;
             for (results.pages[0..results.n_read]) |*item| _ = try self.io.write(item.page_number, &item.page);
+            n_reverted += results.n_read;
             if (results.n_read < results.pages.len) break;
-            offset += 10;
+            offset += results.n_read;
         }
 
-        print("Rollback Completed.\n", .{});
+        print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
+        self.dirty_pages.clear();
+        try self.journal.clear();
     }
 
-    // 1. check if we reached the max dirty pages capacity, if yes we need to commit
+    // check if we reached the max dirty pages capacity, if yes we need to commit
     // existing changes.
-    // 2. Record the page's original state inside of the journal file.
+    // Record the page's original state inside of the journal file.
     pub fn update_page(self: *Pager, page_number: u32, bytes: [PAGE_SIZE]u8) !void {
         var is_first_time = true;
 
-        for (self.dirty_pages[0..self.n_dirty]) |item| {
+        for (self.dirty_pages.constSlice()) |item| {
             if (item == page_number) {
                 // we've already recorded the original version
                 // just need to update cache
@@ -135,44 +162,17 @@ pub const Pager = struct {
 
         const original = self.cache.get(page_number).?; // unwrap is safe here
         if (is_first_time) {
-            // record original state and also need to mark dirty
-            self.journal.record(page_number, original.*);
-            self.dirty_pages[self.n_dirty] = page_number;
-            self.n_dirty += 1;
+            // commit if we reach max dirty pages
+            if (self.dirty_pages.len == self.dirty_pages.capacity()) try self.commit(false);
+
+            // record original state
+            try self.journal.record(page_number, original.*);
+            // mark dirty
+            try self.dirty_pages.append(page_number);
         }
 
         // update cache with latest version
         original.* = bytes;
-    }
-
-    // this should be always called if and only if the entry is not present inside the cache
-    // 1. try to make space by removing non-dirty pages
-    // 2. if we can't make space then we will commit. Mark all pages as clean pages.
-    // 3. make space by removing some page
-    fn cache_page(self: *Pager, page_number: u32, bytes: [PAGE_SIZE]u8) !void {
-        // if we are full
-        if (self.cache.is_full()) {
-            var commit_and_clean = false;
-            // if we can't evict
-            if (self.dirty_pages.len == self.n_dirty) {
-                commit_and_clean = true;
-            } else {
-                // try to evict
-                const made_space = self.cache.evict(&self.dirty_pages);
-                if (!made_space) commit_and_clean = true;
-            }
-
-            if (commit_and_clean) {
-                try self.commit(false);
-                // mark everything as clean
-                self.dirty_pages = undefined;
-                self.n_dirty = 0;
-            }
-        }
-
-        // we may fail due to allocation related errors but should never fail with CacheIsFull
-        // failure here suggests the bug in above code
-        try self.cache.put(page_number, bytes);
     }
 
     // return a const references to different type of pages
@@ -190,8 +190,7 @@ pub const Pager = struct {
                 @panic("Page is not present. The call to fetch invalid page should not have been made.");
             };
             if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
-            // put the page inside cache
-            try self.cache_page(page_number, buffer);
+            self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
             entry = &buffer;
         }
 
@@ -213,27 +212,27 @@ pub const Pager = struct {
 // @multithreading: When we have many threads we have to make sure that there are no more than one
 // mutable references to the same page
 const PagerCache = struct {
-    cache: [MAX_CACHE_SIZE]CacheItem = undefined,
-    n_cached: usize = 0,
+    cache: std.BoundedArray(CacheItem, MAX_CACHE_SIZE),
 
     const CacheItem = struct {
         page_number: u32,
         page: [PAGE_SIZE]u8,
     };
 
-    pub fn init() PagerCache {
-        return PagerCache{};
+    pub fn init() !PagerCache {
+        return PagerCache{ .cache = try std.BoundedArray(CacheItem, MAX_CACHE_SIZE).init(0) };
     }
 
     pub fn is_full(self: *PagerCache) bool {
-        return self.cache.len == self.n_cached;
+        return self.cache.len == self.cache.capacity();
     }
 
-    // evict some page to make space. we will evict a non dirty page
-    pub fn evict(self: *PagerCache, dirty_pages: []u32) bool {
-        var evicted = false;
-        for (0..self.n_cached) |i| {
-            const item = &self.cache[i];
+    // evict some page non dirty page to make space
+    pub fn evict(self: *PagerCache, dirty_pages: []const u32) void {
+        // we should be always able to evict
+        assert(dirty_pages.len < self.cache.len);
+
+        for (self.cache.constSlice(), 0..) |*item, item_index| {
             const page_number = item.page_number;
             // check if this page is dirty
             var is_dirty = false;
@@ -243,34 +242,26 @@ const PagerCache = struct {
 
             if (!is_dirty) {
                 // evict this one
-                for (i..self.n_cached - 1) |j| std.mem.swap(CacheItem, &self.cache[j], &self.cache[j + 1]);
-                evicted = true;
-                self.n_cached -= 1;
-                break;
+                _ = self.cache.swapRemove(item_index);
+                return;
             }
         }
 
-        return evicted;
+        unreachable;
     }
 
     pub fn get(self: *PagerCache, page_number: u32) ?*[PAGE_SIZE]u8 {
-        for (0..self.n_cached) |i| {
-            const item = &self.cache[i];
-            if (item.page_number == page_number) {
-                return &item.page;
-            }
+        for (self.cache.slice()) |*item| {
+            if (item.page_number == page_number) return &item.page;
         }
 
         return null;
     }
 
-    pub fn put(self: *PagerCache, page_number: u32, buffer: [PAGE_SIZE]u8) !void {
-        if (self.cache.len == self.n_cached) {
-            return error.CacheIsFull;
-        }
-
-        self.cache[self.n_cached] = CacheItem{ .page_number = page_number, .page = buffer };
-        self.n_cached += 1;
+    // TODO have a test case to make sure that put gets called for new CacheItem
+    pub fn put(self: *PagerCache, page_number: u32, buffer: [PAGE_SIZE]u8, dirty_pages: []const u32) !void {
+        if (self.is_full()) self.evict(dirty_pages);
+        try self.cache.append(CacheItem{ .page_number = page_number, .page = buffer });
     }
 };
 
@@ -281,12 +272,10 @@ const PagerCache = struct {
 //
 const Journal = struct {
     io: IO,
-    // TODO rename to records
-    pages: [MAX_CACHE_SIZE]JournalEntry,
-    n_recorded: usize,
+    // unsaved entries
+    entries: std.BoundedArray(JournalEntry, MAX_DIRTY_COUNT_BEFORE_COMMIT),
     metadata: JournalMetadataPage,
 
-    // TODO rename to JournalRecord
     const JournalEntry = struct {
         page_number: u32,
         entry: [PAGE_SIZE]u8,
@@ -330,25 +319,36 @@ const Journal = struct {
 
         return Journal{
             .io = io,
-            .pages = undefined,
-            .n_recorded = 0,
+            .entries = try std.BoundedArray(JournalEntry, MAX_DIRTY_COUNT_BEFORE_COMMIT).init(0),
             .metadata = metadata,
         };
     }
 
     const OriginalPage = struct { page_number: u32, page: [PAGE_SIZE]u8 };
-    // we always return a fixed number of pages
-    pub fn get_original_pages(self: *Journal, offset: usize) !struct {
-        pages: [10]OriginalPage,
-        n_read: usize,
-    } {
-        var pages: [10]OriginalPage = [_]OriginalPage{OriginalPage{ .page_number = 0, .page = undefined }} ** 10;
-        // when we are done
-        if (offset == self.n_recorded) return .{ .pages = pages, .n_read = 0 };
+    const BATCH_GET_SIZE = 16;
+    comptime {
+        assert(BATCH_GET_SIZE <= MAX_DIRTY_COUNT_BEFORE_COMMIT);
+    }
 
-        var i = offset; // index inside the metadata.pages
-        var j: usize = 0; // index inside the pages array
-        while (j < pages.len and i < self.n_recorded) {
+    // checks for functions which are supposed to get called after rollback
+    fn assert_no_unsaved_entries(self: *Journal) void {
+        assert(self.entries.len == 0);
+    }
+
+    // return <= BATCH_GET_SIZE of original pages at a time
+    // this always reads from the disk
+    pub fn batch_get_original_pages(self: *Journal, offset: u32) !struct {
+        pages: [BATCH_GET_SIZE]OriginalPage,
+        n_read: u32,
+    } {
+        self.assert_no_unsaved_entries();
+
+        const metadata = &self.metadata;
+        var pages = [_]OriginalPage{OriginalPage{ .page_number = 0, .page = undefined }} ** BATCH_GET_SIZE;
+
+        var i: u32 = offset;
+        var j: u8 = 0;
+        while (i < metadata.n_pages and j < BATCH_GET_SIZE) {
             const original_page_number = self.metadata.pages[i];
             pages[j].page_number = original_page_number;
             _ = try self.io.read(original_page_number, &pages[j].page);
@@ -360,48 +360,44 @@ const Journal = struct {
     }
 
     // record original state of the page
-    fn record(self: *Journal, page_number: u32, entry: [PAGE_SIZE]u8) void {
+    // TODO add test case for checking that record is not getting called for already recorded page
+    fn record(self: *Journal, page_number: u32, entry: [PAGE_SIZE]u8) !void {
         // asserts
-        assert(self.n_recorded < self.pages.len);
-        for (self.pages[0..self.n_recorded]) |item| {
-            // record should not be called for already recorded pages
-            assert(item.page_number != page_number);
-        }
-
-        // if not found then insert it
-        assert(self.n_recorded < self.pages.len);
-        self.pages[self.n_recorded] = JournalEntry{ .page_number = page_number, .entry = entry };
-        self.n_recorded += 1;
+        try self.entries.append(JournalEntry{ .page_number = page_number, .entry = entry });
     }
 
-    // Save all the original pages that we currently have in journal to the
-    // journal file.
-    // After we persist all the pages then we update the header page saving the
+    // Save all the original unsaved pages to the journal file.
+    // After we write all the pages then we update the header page saving the
     // metadata of journal file.
-    // Later when we recover we exactly read those many pages from journal
-    // which journal header has (because if we write some pages and crashed before
-    // updating the header, later when we recover we know the page numbers.
     fn persist(self: *Journal) !void {
-        // persist will get called only when we ran out of cache
+        if (self.entries.len == 0) return;
+
         var metadata = &self.metadata;
 
-        for (&self.pages) |*journal_entry| {
-            _ = try self.io.write(metadata.n_pages, &journal_entry.entry);
-            metadata.pages[metadata.n_pages] = journal_entry.page_number;
+        // write unsaved pages
+        for (self.entries.constSlice()) |*entry| {
+            const page_number = metadata.n_pages + 1;
+            _ = try self.io.write(page_number, &entry.entry);
+            metadata.pages[metadata.n_pages] = entry.page_number;
             metadata.n_pages += 1;
         }
 
-        // save the updated metadata page
-        _ = try self.io.write(0, std.mem.asBytes(&metadata));
+        // write metadata page
+        // NOTE: It's important that we write metadata page only after saving
+        // all the entries.
+        _ = try self.io.write(0, std.mem.asBytes(metadata));
 
         // reset
-        self.n_recorded = 0;
-        self.pages = undefined;
+        self.entries.clear();
+        print("Persisted journal.\n", .{});
+        var buf = [_]u8{0} ** 4096;
+        _ = try self.io.read(0, &buf);
     }
 
     fn clear(self: *Journal) !void {
-        _ = try self.io.write(0, @as([]const u8, ""));
-        self.n_recorded = 0;
-        self.pages = undefined;
+        self.assert_no_unsaved_entries();
+
+        try self.io.trunucate();
+        self.entries.clear();
     }
 };

@@ -14,6 +14,7 @@ pub const ExecutionEngine = struct {
         var pager = try Pager.init(database_file_path, allocator);
 
         // call rollback to sync if we had crashed earlier
+        print("Calling Rollback after instance start.\n", .{});
         try pager.rollback();
 
         return ExecutionEngine{
@@ -22,53 +23,57 @@ pub const ExecutionEngine = struct {
         };
     }
 
+    pub fn deinit(self: *ExecutionEngine) void {
+        self.pager.deinit();
+    }
+
     pub fn execute_query(self: *ExecutionEngine, query: Query) !void {
-        // true for update queries
-        var commit = false;
-        // for update queries, true to denote rollback partially done updates
-        var rollback = false;
+        // TODO
+        // we need to separate validation errors from commit errors
+
+        var is_update_query = false;
+        // for update queries, they can fail after updating some records
+        var rollback_partially_done_updates = false;
         var client_err: anyerror = undefined;
 
         switch (query) {
             Query.CreateTable => |payload| {
-                commit = true;
+                is_update_query = true;
                 self.create_table(payload) catch |err| {
                     client_err = err;
-                    rollback = true;
+                    rollback_partially_done_updates = true;
                 };
             },
             Query.DropTable => |payload| {
-                commit = true;
+                is_update_query = true;
                 self.drop_table(payload) catch |err| {
                     client_err = err;
-                    rollback = true;
+                    rollback_partially_done_updates = true;
                 };
             },
             else => @panic("not implemented"),
         }
 
-        if (rollback) {
+        if (rollback_partially_done_updates) {
             print("Failed update query with error \"{}\". Calling Rollback.\n", .{client_err});
-            // we might have done some partial updates and we need to rollback
             try self.pager.rollback();
-        } else if (commit) {
-            // if we fail while doing last update then?
-            // Is this recoverable? Should we call rollback? TODO
-            try self.pager.commit(true);
+        } else if (is_update_query) {
+            // at this point we may've done partial updates and they are succeeded. But
+            // if we can still fail to do last commit.
+            self.pager.commit(true) catch |err| {
+                // journal errors are not recoverable
+                if (err == error.JournalError) {
+                    return err;
+                }
+                // if journal is saved correctly then other errors are related to pager io, and we can try rollback
+                try self.pager.rollback();
+            };
         }
     }
 
     fn create_table(self: *ExecutionEngine, payload: CreateTablePayload) !void {
         const table_name = payload.table_name;
         const columns = payload.columns;
-
-        //print("pager state 1: {any}\n", .{.{
-        //    .cache = self.pager.cache,
-        //    .dirty = self.pager.dirty_pages,
-        //    .n_dirty = self.pager.n_dirty,
-        //    .journal = self.pager.journal.pages,
-        //    .n_recorded = self.pager.journal.n_recorded,
-        //}});
 
         var page_zero = self.pager.get_metadata_page().*; // .* makes copy
         const parsed = try page_zero.parse_tables(self.allocator);

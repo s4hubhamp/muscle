@@ -50,6 +50,10 @@ pub const IO = struct {
         return written;
     }
 
+    pub fn trunucate(self: *IO) !void {
+        try self.file.setEndPos(0);
+    }
+
     pub fn deinit(self: IO) void {
         self.file.close();
     }
