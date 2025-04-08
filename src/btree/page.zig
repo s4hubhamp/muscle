@@ -1,27 +1,21 @@
 const std = @import("std");
+const muscle = @import("muscle");
 const print = std.debug.print;
 const assert = std.debug.assert;
 
-const muscle = @import("muscle");
-const page = @import("./pager.zig");
-const PageNumber = page.PageNumber;
-const SlotIndex = page.SlotIndex;
-const PAGE_SIZE = page.PAGE_SIZE;
-
-// The whole db metadata is stringified json
-// TODO this can be packed to avoid heap references
 pub const DBMetadataPage = extern struct {
     total_pages: u32,
     free_pages: u32,
     first_free_page: u32,
 
+    // stringified tables length
     tables_len: u32,
     // stringified tables
     tables: [4080]u8,
 
     comptime {
         assert(@alignOf(DBMetadataPage) == 4);
-        assert(@sizeOf(DBMetadataPage) == 4096);
+        assert(@sizeOf(DBMetadataPage) == muscle.PAGE_SIZE);
     }
 
     pub fn init() DBMetadataPage {
@@ -78,7 +72,7 @@ pub const Page = extern struct {
     num_slots: u16,
     // Offset of the last inserted cell counting from the start
     last_used_offset: u16,
-    // free space is 4096 - size - (size of header fields = 16)
+    // free space is muscle.PAGE_SIZE - size - (size of header fields = 16)
     // used to determine whether page is underflow or not
     free_space: u16,
     // size of the content only
@@ -97,7 +91,7 @@ pub const Page = extern struct {
 
     comptime {
         assert(@alignOf(Page) == 4);
-        assert(@sizeOf(Page) == 4096);
+        assert(@sizeOf(Page) == muscle.PAGE_SIZE);
         assert(HEADER_SIZE == 12);
     }
 
@@ -159,7 +153,7 @@ pub const OverflowPage = extern struct {
     content: [4088]u8 = [_]u8{0} ** 4088,
     comptime {
         assert(@alignOf(Page) == 4);
-        assert(@sizeOf(Page) == 4096);
+        assert(@sizeOf(Page) == muscle.PAGE_SIZE);
     }
 
     fn init() OverflowPage {

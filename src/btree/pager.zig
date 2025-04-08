@@ -1,20 +1,13 @@
 const std = @import("std");
+const muscle = @import("muscle");
+const page = @import("./page.zig");
+const IO = @import("../io.zig").IO;
+
 const assert = std.debug.assert;
 const print = std.debug.print;
-const page = @import("./page.zig");
-
 const DBMetadataPage = page.DBMetadataPage;
 const OverflowPage = page.OverflowPage;
 const Page = page.Page;
-const PageType = page.PageType;
-
-const IO = @import("../io.zig").IO;
-
-pub const PageNumber = u32;
-pub const SlotIndex = u16;
-
-// constants
-pub const PAGE_SIZE: u16 = 4096;
 
 // number of pages we can have at a time inside our cache
 const MAX_CACHE_SIZE = 69;
@@ -49,7 +42,7 @@ pub const Pager = struct {
         var io = try IO.init(database_file_path);
         // try to read metadata page
         // if we can't read metadata page that means it does not exists (we need to create new metadata page)
-        var metadata_buffer = [_]u8{0} ** PAGE_SIZE;
+        var metadata_buffer = [_]u8{0} ** muscle.PAGE_SIZE;
         const bytes_read = try io.read(0, &metadata_buffer);
 
         if (bytes_read == 0) {
@@ -148,7 +141,7 @@ pub const Pager = struct {
     // check if we reached the max dirty pages capacity, if yes we need to commit
     // existing changes.
     // Record the page's original state inside of the journal file.
-    pub fn update_page(self: *Pager, page_number: u32, bytes: [PAGE_SIZE]u8) !void {
+    pub fn update_page(self: *Pager, page_number: u32, bytes: [muscle.PAGE_SIZE]u8) !void {
         var is_first_time = true;
 
         for (self.dirty_pages.constSlice()) |item| {
@@ -185,11 +178,11 @@ pub const Pager = struct {
         var entry = self.cache.get(page_number);
         if (entry == null) {
             // load from disk
-            var buffer = [_]u8{0} ** PAGE_SIZE;
+            var buffer = [_]u8{0} ** muscle.PAGE_SIZE;
             const bytes_read = self.io.read(page_number, &buffer) catch {
                 @panic("Page is not present. The call to fetch invalid page should not have been made.");
             };
-            if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
+            if (bytes_read != muscle.PAGE_SIZE) @panic("Page is corrupted.");
             self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
             entry = &buffer;
         }
@@ -216,7 +209,7 @@ const PagerCache = struct {
 
     const CacheItem = struct {
         page_number: u32,
-        page: [PAGE_SIZE]u8,
+        page: [muscle.PAGE_SIZE]u8,
     };
 
     pub fn init() !PagerCache {
@@ -250,7 +243,7 @@ const PagerCache = struct {
         unreachable;
     }
 
-    pub fn get(self: *PagerCache, page_number: u32) ?*[PAGE_SIZE]u8 {
+    pub fn get(self: *PagerCache, page_number: u32) ?*[muscle.PAGE_SIZE]u8 {
         for (self.cache.slice()) |*item| {
             if (item.page_number == page_number) return &item.page;
         }
@@ -258,8 +251,8 @@ const PagerCache = struct {
         return null;
     }
 
-    // TODO have a test case to make sure that put gets called for new CacheItem
-    pub fn put(self: *PagerCache, page_number: u32, buffer: [PAGE_SIZE]u8, dirty_pages: []const u32) !void {
+    // put is always called for new item
+    pub fn put(self: *PagerCache, page_number: u32, buffer: [muscle.PAGE_SIZE]u8, dirty_pages: []const u32) !void {
         if (self.is_full()) self.evict(dirty_pages);
         try self.cache.append(CacheItem{ .page_number = page_number, .page = buffer });
     }
@@ -278,7 +271,7 @@ const Journal = struct {
 
     const JournalEntry = struct {
         page_number: u32,
-        entry: [PAGE_SIZE]u8,
+        entry: [muscle.PAGE_SIZE]u8,
     };
 
     const JournalMetadataPage = extern struct {
@@ -287,7 +280,7 @@ const Journal = struct {
 
         comptime {
             assert(@alignOf(JournalMetadataPage) == 4);
-            assert(@sizeOf(JournalMetadataPage) == 4096);
+            assert(@sizeOf(JournalMetadataPage) == muscle.PAGE_SIZE);
         }
     };
 
@@ -304,11 +297,11 @@ const Journal = struct {
 
         // load metadata
         var metadata: JournalMetadataPage = undefined;
-        var buffer = [_]u8{0} ** PAGE_SIZE;
+        var buffer = [_]u8{0} ** muscle.PAGE_SIZE;
         const bytes_read = try io.read(0, &buffer);
 
         if (bytes_read > 0) {
-            assert(bytes_read == PAGE_SIZE);
+            assert(bytes_read == muscle.PAGE_SIZE);
             metadata = @as(*JournalMetadataPage, @ptrCast(@alignCast(&buffer))).*;
         } else {
             metadata = JournalMetadataPage{
@@ -324,7 +317,7 @@ const Journal = struct {
         };
     }
 
-    const OriginalPage = struct { page_number: u32, page: [PAGE_SIZE]u8 };
+    const OriginalPage = struct { page_number: u32, page: [muscle.PAGE_SIZE]u8 };
     const BATCH_GET_SIZE = 16;
     comptime {
         assert(BATCH_GET_SIZE <= MAX_DIRTY_COUNT_BEFORE_COMMIT);
@@ -360,8 +353,8 @@ const Journal = struct {
     }
 
     // record original state of the page
-    // TODO add test case for checking that record is not getting called for already recorded page
-    fn record(self: *Journal, page_number: u32, entry: [PAGE_SIZE]u8) !void {
+    // record always called for non recorded pages
+    fn record(self: *Journal, page_number: u32, entry: [muscle.PAGE_SIZE]u8) !void {
         // asserts
         try self.entries.append(JournalEntry{ .page_number = page_number, .entry = entry });
     }
@@ -390,7 +383,7 @@ const Journal = struct {
         // reset
         self.entries.clear();
         print("Persisted journal.\n", .{});
-        var buf = [_]u8{0} ** 4096;
+        var buf = [_]u8{0} ** muscle.PAGE_SIZE;
         _ = try self.io.read(0, &buf);
     }
 

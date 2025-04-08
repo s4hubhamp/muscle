@@ -36,3 +36,6 @@ pub const Index = struct {
     column_name: []const u8,
     is_unique: bool,
 };
+
+pub const PAGE_SIZE = 4096;
+pub const PageNumber = u32;
