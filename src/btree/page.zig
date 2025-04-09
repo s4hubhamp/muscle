@@ -160,3 +160,13 @@ pub const OverflowPage = extern struct {
         return OverflowPage{ .size = 0, .next = 0, .content = [_]u8{0} ** 4088 };
     }
 };
+
+pub const FreePage = extern struct {
+    next: muscle.PageNumber,
+    padding: [4092]u8,
+
+    comptime {
+        assert(@alignOf(FreePage) == 4);
+        assert(@sizeOf(FreePage) == muscle.PAGE_SIZE);
+    }
+};

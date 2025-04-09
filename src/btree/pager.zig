@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const print = std.debug.print;
 const DBMetadataPage = page.DBMetadataPage;
 const OverflowPage = page.OverflowPage;
+const FreePage = page.FreePage;
 const Page = page.Page;
 
 // number of pages we can have at a time inside our cache
@@ -38,7 +39,7 @@ pub const Pager = struct {
     journal: Journal,
 
     pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !Pager {
-        print("Opening Database file\n", .{});
+        print("Opening Database file.\n", .{});
         var io = try IO.init(database_file_path);
         // try to read metadata page
         // if we can't read metadata page that means it does not exists (we need to create new metadata page)
@@ -115,7 +116,7 @@ pub const Pager = struct {
             return error.JournalError;
         };
 
-        print("Commit successfull\n", .{});
+        print("Commit successfull.\n", .{});
     }
 
     // Moves the original page copies from the journal file back to the database file.
@@ -133,6 +134,11 @@ pub const Pager = struct {
             offset += results.n_read;
         }
 
+        // need to truncate file until first_newly_alloced
+        if (self.journal.get_first_newly_alloced_page()) |first_newly_alloced| {
+            try self.io.truncate(first_newly_alloced);
+        }
+
         print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
         self.dirty_pages.clear();
         try self.journal.clear();
@@ -142,27 +148,27 @@ pub const Pager = struct {
     // existing changes.
     // Record the page's original state inside of the journal file.
     pub fn update_page(self: *Pager, page_number: u32, bytes: [muscle.PAGE_SIZE]u8) !void {
-        var is_first_time = true;
-
+        const original = self.cache.get(page_number).?; // unwrap is safe here
+        var is_dirty = false;
         for (self.dirty_pages.constSlice()) |item| {
             if (item == page_number) {
-                // we've already recorded the original version
-                // just need to update cache
-                is_first_time = false;
+                is_dirty = true;
                 break;
             }
         }
 
-        const original = self.cache.get(page_number).?; // unwrap is safe here
-        if (is_first_time) {
+        if (!is_dirty) {
             // commit if we reach max dirty pages
             if (self.dirty_pages.len == self.dirty_pages.capacity()) try self.commit(false);
-
-            // record original state
-            try self.journal.record(page_number, original.*);
             // mark dirty
             try self.dirty_pages.append(page_number);
         }
+
+        // if some page already dirty we know for sure that it's part of journal
+        // if page is not dirty it still can be part of journal.record because we might have
+        // updated it during previous partial commit(commit called from Pager).
+        // So it is the job of journal to check for duplicates
+        try self.journal.record(page_number, original.*);
 
         // update cache with latest version
         original.* = bytes;
@@ -174,30 +180,69 @@ pub const Pager = struct {
         return @as(*const DBMetadataPage, @ptrCast(@alignCast(entry)));
     }
 
-    pub fn get_overflow_page(self: *Pager, page_number: u32) !*const OverflowPage {
-        var entry = self.cache.get(page_number);
-        if (entry == null) {
-            // load from disk
-            var buffer = [_]u8{0} ** muscle.PAGE_SIZE;
-            const bytes_read = self.io.read(page_number, &buffer) catch {
-                @panic("Page is not present. The call to fetch invalid page should not have been made.");
-            };
-            if (bytes_read != muscle.PAGE_SIZE) @panic("Page is corrupted.");
-            self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
-            entry = &buffer;
-        }
+    fn get_page_from_cache_or_load_from_disk(self: *Pager, page_number: u32) ![muscle.PAGE_SIZE]u8 {
+        const entry = self.cache.get(page_number);
 
-        return @as(*const OverflowPage, @ptrCast(@alignCast(entry)));
+        if (entry) |e| return e.*;
+
+        var buffer = [_]u8{0} ** muscle.PAGE_SIZE;
+        const bytes_read = self.io.read(page_number, &buffer) catch {
+            @panic("Page is not present. The call to fetch invalid page should not have been made.");
+        };
+        if (bytes_read != muscle.PAGE_SIZE) @panic("Page is corrupted.");
+        try self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
+
+        return buffer;
+    }
+
+    pub fn get_overflow_page(self: *Pager, page_number: u32) !*const OverflowPage {
+        const bytes = self.get_page_from_cache_or_load_from_disk(page_number);
+        return @as(*const OverflowPage, @ptrCast(@alignCast(bytes)));
+    }
+
+    pub fn get_page(self: *Pager, page_number: u32) !*const Page {
+        const bytes = self.get_page_from_cache_or_load_from_disk(page_number);
+        return @as(*const Page, @ptrCast(@alignCast(bytes)));
     }
 
     pub fn get_free_page(self: *Pager) !u32 {
-        // Note that cache can't ever evict the PageZero
-        const metadata = self.get_metadata_page();
+        var metadata = self.get_metadata_page().*;
+
         if (metadata.first_free_page == 0) {
-            print("No free pages available. New page will be: {}\n", .{metadata.total_pages});
-            return metadata.total_pages;
+            //
+            // the idea is to return a free page number from here. later caller will call get_[page_type]
+            // which internally calls `get_page_from_cache_or_load_from_disk` to get the page.
+            // We need to take care of following:
+            // 1. Add this to cache Because the page is totally new we can't have it on disk yet and
+            // `get_page_from_cache_or_load_from_disk` will fail
+            // 2. Mark dirty so it won't get evicted.
+            // 3. consider a scenario where we have allocated a new page at the end.
+            // first cycle of partial commit gets completed.
+            // final cycle fails. During rollback we need to release those new
+            // pages as free to use. For this we need our journal to also tell us
+            // wheather we allocated some new pages at the end of the database file
+            // or used existing pages, and mark those free to use again.
+
+            const free_page_number = metadata.total_pages;
+            // put inside the cache
+            const buffer = [_]u8{0} ** muscle.PAGE_SIZE;
+            try self.cache.put(metadata.total_pages, buffer, self.dirty_pages.constSlice());
+            // mark dirty
+            try self.dirty_pages.append(metadata.total_pages);
+            // save to journal
+            self.journal.maybe_set_first_newly_alloced_page(metadata.total_pages);
+            metadata.total_pages += 1;
+            try self.update_page(0, std.mem.toBytes(metadata));
+            return free_page_number;
         } else {
-            return metadata.first_free_page;
+            const free_page_number = metadata.first_free_page;
+            const free_page: *FreePage =
+                @constCast(
+                    @ptrCast(@alignCast(&(try self.get_page_from_cache_or_load_from_disk(free_page_number)))),
+                );
+            metadata.first_free_page = free_page.next;
+            try self.update_page(0, std.mem.toBytes(metadata));
+            return free_page_number;
         }
     }
 };
@@ -275,8 +320,9 @@ const Journal = struct {
     };
 
     const JournalMetadataPage = extern struct {
+        first_new_alloced_page: u32,
         n_pages: u32,
-        pages: [1023]u32,
+        pages: [1022]u32,
 
         comptime {
             assert(@alignOf(JournalMetadataPage) == 4);
@@ -292,7 +338,7 @@ const Journal = struct {
         for (JOURNAL_FILE_EXTENSION, database_file_path.len..) |char, index| journal_file_path[index] = char;
 
         // in posix path should not be null terminated
-        print("Opening Journal file\n", .{});
+        print("Opening Journal file.\n", .{});
         var io = try IO.init(journal_file_path[0 .. database_file_path.len + JOURNAL_FILE_EXTENSION.len]);
 
         // load metadata
@@ -305,8 +351,10 @@ const Journal = struct {
             metadata = @as(*JournalMetadataPage, @ptrCast(@alignCast(&buffer))).*;
         } else {
             metadata = JournalMetadataPage{
+                // zero indicates no allocation
+                .first_new_alloced_page = 0,
                 .n_pages = 0,
-                .pages = [_]u32{0} ** 1023,
+                .pages = [_]u32{0} ** 1022,
             };
         }
 
@@ -326,6 +374,19 @@ const Journal = struct {
     // checks for functions which are supposed to get called after rollback
     fn assert_no_unsaved_entries(self: *Journal) void {
         assert(self.entries.len == 0);
+    }
+
+    fn get_first_newly_alloced_page(self: *const Journal) ?u32 {
+        if (self.metadata.first_new_alloced_page == 0) {
+            return null;
+        }
+        return self.metadata.first_new_alloced_page;
+    }
+
+    fn maybe_set_first_newly_alloced_page(self: *Journal, page_number: u32) void {
+        if (self.metadata.first_new_alloced_page == 0) {
+            self.metadata.first_new_alloced_page = page_number;
+        }
     }
 
     // return <= BATCH_GET_SIZE of original pages at a time
@@ -355,7 +416,13 @@ const Journal = struct {
     // record original state of the page
     // record always called for non recorded pages
     fn record(self: *Journal, page_number: u32, entry: [muscle.PAGE_SIZE]u8) !void {
-        // asserts
+        // check if record already exists
+        for (0..self.metadata.n_pages) |i| {
+            if (self.metadata.pages[i] == page_number) {
+                return;
+            }
+        }
+
         try self.entries.append(JournalEntry{ .page_number = page_number, .entry = entry });
     }
 
@@ -387,10 +454,12 @@ const Journal = struct {
         _ = try self.io.read(0, &buf);
     }
 
+    // clear the journal file
+    // this gets called only when whole query execution is completed
     fn clear(self: *Journal) !void {
         self.assert_no_unsaved_entries();
 
-        try self.io.trunucate();
+        try self.io.truncate(null);
         self.entries.clear();
     }
 };

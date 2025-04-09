@@ -28,13 +28,10 @@ pub const ExecutionEngine = struct {
     }
 
     pub fn execute_query(self: *ExecutionEngine, query: Query) !void {
-        // TODO
-        // we need to separate validation errors from commit errors
-
         var is_update_query = false;
         // for update queries, they can fail after updating some records
         var rollback_partially_done_updates = false;
-        var client_err: anyerror = undefined;
+        var client_err: ?anyerror = null;
 
         switch (query) {
             Query.CreateTable => |payload| {
@@ -55,20 +52,21 @@ pub const ExecutionEngine = struct {
         }
 
         if (rollback_partially_done_updates) {
-            print("Failed update query with error \"{}\". Calling Rollback.\n", .{client_err});
+            print("Processing failed before final commit. Calling Rollback.\n", .{});
             try self.pager.rollback();
         } else if (is_update_query) {
             // at this point we may've done partial updates and they are succeeded. But
             // if we can still fail to do last commit.
             self.pager.commit(true) catch |err| {
-                // journal errors are not recoverable
-                if (err == error.JournalError) {
-                    return err;
-                }
-                // if journal is saved correctly then other errors are related to pager io, and we can try rollback
+                client_err = err;
+                // journal might be in bad state but if it's not rollback will succeed
+                // or else we will crash.
                 try self.pager.rollback();
             };
         }
+
+        if (client_err != null)
+            print("client_err: {any}\n", .{client_err});
     }
 
     fn create_table(self: *ExecutionEngine, payload: CreateTablePayload) !void {
@@ -92,9 +90,10 @@ pub const ExecutionEngine = struct {
 
         try tables_list.appendSlice(parsed.value);
 
+        const root_page_number = try self.pager.get_free_page();
         // append a new table entry
         try tables_list.append(muscle.Table{
-            .root = try self.pager.get_free_page(),
+            .root = root_page_number,
             .row_id = 1, // row id will start from 1
             .name = table_name,
             .columns = columns,

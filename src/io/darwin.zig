@@ -50,8 +50,14 @@ pub const IO = struct {
         return written;
     }
 
-    pub fn trunucate(self: *IO) !void {
-        try self.file.setEndPos(0);
+    pub fn truncate(self: *IO, page_number: ?u32) !void {
+        if (page_number) |n| {
+            std.debug.print("Truncated file to position: {}\n", .{muscle.PAGE_SIZE * n});
+            try self.file.setEndPos(muscle.PAGE_SIZE * n);
+        } else {
+            std.debug.print("Reset whole file.\n", .{});
+            try self.file.setEndPos(0);
+        }
     }
 
     pub fn deinit(self: IO) void {
