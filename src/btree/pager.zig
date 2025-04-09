@@ -22,7 +22,8 @@ const MAX_DIRTY_COUNT_BEFORE_COMMIT = 64;
 
 comptime {
     // This is important.
-    // We need to evict non dirty pages and thus max number of dirty pages should be always lesser
+    // cache.put should always be able to evict non dirty pages.
+    // Hence we need to make sure that number of dirty pages are always less than max cached capacity.
     assert(MAX_DIRTY_COUNT_BEFORE_COMMIT < MAX_CACHE_SIZE);
 }
 
@@ -174,35 +175,35 @@ pub const Pager = struct {
         original.* = bytes;
     }
 
+    fn get_page_from_cache_or_load_from_disk(self: *Pager, page_number: u32) !*const [muscle.PAGE_SIZE]u8 {
+        const entry = self.cache.get(page_number);
+        if (entry) |e| return e;
+
+        // load from disk and cache it
+        {
+            var buffer = [_]u8{0} ** muscle.PAGE_SIZE;
+            const bytes_read = self.io.read(page_number, &buffer) catch {
+                @panic("Page is not present. The call to fetch invalid page should not have been made.");
+            };
+            if (bytes_read != muscle.PAGE_SIZE) @panic("Page is corrupted.");
+            try self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
+        }
+
+        return self.cache.get(page_number).?;
+    }
+
     // return a const references to different type of pages
     pub fn get_metadata_page(self: *Pager) *const DBMetadataPage {
         const entry = self.cache.get(0).?; // safe to unwrap
-        return @as(*const DBMetadataPage, @ptrCast(@alignCast(entry)));
-    }
-
-    fn get_page_from_cache_or_load_from_disk(self: *Pager, page_number: u32) ![muscle.PAGE_SIZE]u8 {
-        const entry = self.cache.get(page_number);
-
-        if (entry) |e| return e.*;
-
-        var buffer = [_]u8{0} ** muscle.PAGE_SIZE;
-        const bytes_read = self.io.read(page_number, &buffer) catch {
-            @panic("Page is not present. The call to fetch invalid page should not have been made.");
-        };
-        if (bytes_read != muscle.PAGE_SIZE) @panic("Page is corrupted.");
-        try self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
-
-        return buffer;
+        return DBMetadataPage.cast_from(entry);
     }
 
     pub fn get_overflow_page(self: *Pager, page_number: u32) !*const OverflowPage {
-        const bytes = self.get_page_from_cache_or_load_from_disk(page_number);
-        return @as(*const OverflowPage, @ptrCast(@alignCast(bytes)));
+        return OverflowPage.cast_from(self.get_page_from_cache_or_load_from_disk(page_number));
     }
 
     pub fn get_page(self: *Pager, page_number: u32) !*const Page {
-        const bytes = self.get_page_from_cache_or_load_from_disk(page_number);
-        return @as(*const Page, @ptrCast(@alignCast(bytes)));
+        return Page.cast_from(self.get_page_from_cache_or_load_from_disk(page_number));
     }
 
     pub fn get_free_page(self: *Pager) !u32 {
@@ -236,10 +237,7 @@ pub const Pager = struct {
             return free_page_number;
         } else {
             const free_page_number = metadata.first_free_page;
-            const free_page: *FreePage =
-                @constCast(
-                    @ptrCast(@alignCast(&(try self.get_page_from_cache_or_load_from_disk(free_page_number)))),
-                );
+            const free_page = FreePage.cast_from(try self.get_page_from_cache_or_load_from_disk(free_page_number));
             metadata.first_free_page = free_page.next;
             try self.update_page(0, std.mem.toBytes(metadata));
             return free_page_number;
