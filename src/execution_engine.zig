@@ -41,7 +41,7 @@ pub const ExecutionEngine = struct {
         // Perhaps the correct thing to do is making the decoding of metadata page faster,
         // we never keep it in journal to keep the journal simpler.
         //
-        const metadata_page = self.pager.get_metadata_page(); // .* makes copy
+        const metadata_page = try self.pager.get_page(page.DBMetadataPage, 0);
         const parsed = try metadata_page.parse_tables(self.allocator);
         const tables = parsed.value;
         defer {
@@ -114,7 +114,11 @@ pub const ExecutionEngine = struct {
 
         try tables_list.appendSlice(tables);
 
-        const root_page_number = try self.pager.get_free_page();
+        const root_page_number = try self.pager.alloc_free_page();
+        // update root page
+        const root_page = page.Page.init();
+        try self.pager.update_page(root_page_number, root_page.to_bytes());
+
         // append a new table entry
         try tables_list.append(muscle.Table{
             .root = root_page_number,
@@ -127,7 +131,7 @@ pub const ExecutionEngine = struct {
         // update tables
         try metadata_page_copy.set_tables(self.allocator, tables_list.items[0..]);
         // put updates into cache
-        try self.pager.update_page(0, std.mem.toBytes(metadata_page_copy));
+        try self.pager.update_page(0, metadata_page_copy.to_bytes());
     }
 
     fn drop_table(

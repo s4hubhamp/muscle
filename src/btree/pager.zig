@@ -101,8 +101,13 @@ pub const Pager = struct {
         // sort for sequential io
         std.mem.sort(u32, self.dirty_pages.slice(), {}, comptime std.sort.asc(u32));
         for (self.dirty_pages.slice()) |page_number| {
+            //print("commiting page: {} content: {any}\n", .{
+            //    page_number,
+            //    std.mem.asBytes(self.cache.get(page_number).?),
+            //});
             _ = self.io.write(
                 page_number,
+                // dirty pages will always be inside the cache
                 std.mem.asBytes(self.cache.get(page_number).?),
             ) catch |io_err| {
                 print("Failed to save page {} during commit.\n", .{page_number});
@@ -140,16 +145,19 @@ pub const Pager = struct {
             try self.io.truncate(first_newly_alloced);
         }
 
-        print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
         self.dirty_pages.clear();
         try self.journal.clear();
+        print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
     }
 
     // check if we reached the max dirty pages capacity, if yes we need to commit
     // existing changes.
     // Record the page's original state inside of the journal file.
     pub fn update_page(self: *Pager, page_number: u32, bytes: [muscle.PAGE_SIZE]u8) !void {
-        const original = self.cache.get(page_number).?; // unwrap is safe here
+        // A following scenario can happen: we've given a page reference to someone but they did not
+        // call update page quick enough and in between their page gets evicted.
+        // Hence, we can't always expect the page which we are going to update to be inside cache.
+        const original: *const [4096]u8 = try self.get_page_bytes_from_cache_or_disk(page_number);
         var is_dirty = false;
         for (self.dirty_pages.constSlice()) |item| {
             if (item == page_number) {
@@ -172,10 +180,10 @@ pub const Pager = struct {
         try self.journal.record(page_number, original.*);
 
         // update cache with latest version
-        original.* = bytes;
+        try self.cache.put(page_number, bytes, self.dirty_pages.constSlice());
     }
 
-    fn get_page_from_cache_or_load_from_disk(self: *Pager, page_number: u32) !*const [muscle.PAGE_SIZE]u8 {
+    fn get_page_bytes_from_cache_or_disk(self: *Pager, page_number: u32) !*const [muscle.PAGE_SIZE]u8 {
         const entry = self.cache.get(page_number);
         if (entry) |e| return e;
 
@@ -192,30 +200,22 @@ pub const Pager = struct {
         return self.cache.get(page_number).?;
     }
 
-    // return a const references to different type of pages
-    pub fn get_metadata_page(self: *Pager) *const DBMetadataPage {
-        const entry = self.cache.get(0).?; // safe to unwrap
-        return DBMetadataPage.cast_from(entry);
+    pub fn get_page(self: *Pager, comptime T: type, page_number: u32) !*const T {
+        const page_: *const T = @ptrCast(@alignCast(try self.get_page_bytes_from_cache_or_disk(page_number)));
+        return page_;
     }
 
-    pub fn get_overflow_page(self: *Pager, page_number: u32) !*const OverflowPage {
-        return OverflowPage.cast_from(self.get_page_from_cache_or_load_from_disk(page_number));
-    }
-
-    pub fn get_page(self: *Pager, page_number: u32) !*const Page {
-        return Page.cast_from(self.get_page_from_cache_or_load_from_disk(page_number));
-    }
-
-    pub fn get_free_page(self: *Pager) !u32 {
-        var metadata = self.get_metadata_page().*;
+    pub fn alloc_free_page(self: *Pager) !u32 {
+        var metadata = (try self.get_page(DBMetadataPage, 0)).*;
+        var free_page_number: u32 = undefined;
 
         if (metadata.first_free_page == 0) {
             //
             // the idea is to return a free page number from here. later caller will call get_[page_type]
-            // which internally calls `get_page_from_cache_or_load_from_disk` to get the page.
+            // which internally calls `get_page_bytes_from_cache_or_disk` to get the page.
             // We need to take care of following:
             // 1. Add this to cache Because the page is totally new we can't have it on disk yet and
-            // `get_page_from_cache_or_load_from_disk` will fail
+            // `get_page_bytes_from_cache_or_disk` will fail
             // 2. Mark dirty so it won't get evicted.
             // 3. consider a scenario where we have allocated a new page at the end.
             // first cycle of partial commit gets completed.
@@ -224,22 +224,22 @@ pub const Pager = struct {
             // wheather we allocated some new pages at the end of the database file
             // or used existing pages, and mark those free to use again.
 
-            const free_page_number = metadata.total_pages;
+            free_page_number = metadata.total_pages;
             // put inside the cache
             const buffer = [_]u8{0} ** muscle.PAGE_SIZE;
-            try self.cache.put(metadata.total_pages, buffer, self.dirty_pages.constSlice());
+            try self.cache.put(free_page_number, buffer, self.dirty_pages.constSlice());
             // mark dirty
-            try self.dirty_pages.append(metadata.total_pages);
+            try self.dirty_pages.append(free_page_number);
             // save to journal
-            self.journal.maybe_set_first_newly_alloced_page(metadata.total_pages);
+            self.journal.maybe_set_first_newly_alloced_page(free_page_number);
             metadata.total_pages += 1;
-            try self.update_page(0, std.mem.toBytes(metadata));
+            try self.update_page(0, metadata.to_bytes());
             return free_page_number;
         } else {
-            const free_page_number = metadata.first_free_page;
-            const free_page = FreePage.cast_from(try self.get_page_from_cache_or_load_from_disk(free_page_number));
+            free_page_number = metadata.first_free_page;
+            const free_page = FreePage.cast_from(try self.get_page_bytes_from_cache_or_disk(free_page_number));
             metadata.first_free_page = free_page.next;
-            try self.update_page(0, std.mem.toBytes(metadata));
+            try self.update_page(0, metadata.to_bytes());
             return free_page_number;
         }
     }
@@ -286,7 +286,7 @@ const PagerCache = struct {
         unreachable;
     }
 
-    pub fn get(self: *PagerCache, page_number: u32) ?*[muscle.PAGE_SIZE]u8 {
+    pub fn get(self: *PagerCache, page_number: u32) ?*const [muscle.PAGE_SIZE]u8 {
         for (self.cache.slice()) |*item| {
             if (item.page_number == page_number) return &item.page;
         }
@@ -294,9 +294,17 @@ const PagerCache = struct {
         return null;
     }
 
-    // put is always called for new item
+    // put gets called for existing item or the newer item
     pub fn put(self: *PagerCache, page_number: u32, buffer: [muscle.PAGE_SIZE]u8, dirty_pages: []const u32) !void {
         if (self.is_full()) self.evict(dirty_pages);
+
+        for (self.cache.slice()) |*item| {
+            if (item.page_number == page_number) {
+                item.page = buffer;
+                return;
+            }
+        }
+
         try self.cache.append(CacheItem{ .page_number = page_number, .page = buffer });
     }
 };
