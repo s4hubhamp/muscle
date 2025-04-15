@@ -1,5 +1,7 @@
 const std = @import("std");
 const muscle = @import("muscle");
+const serde = @import("../serialize_deserialize.zig");
+
 const print = std.debug.print;
 const assert = std.debug.assert;
 
@@ -33,8 +35,9 @@ pub const DBMetadataPage = extern struct {
         return ptr;
     }
 
-    pub fn to_bytes(self: *const DBMetadataPage) [muscle.PAGE_SIZE]u8 {
-        return std.mem.toBytes(self.*);
+    // return a serialized bytes
+    pub fn to_bytes(self: *const DBMetadataPage) ![muscle.PAGE_SIZE]u8 {
+        return try serde.serialize_page(self.*);
     }
 
     pub fn parse_tables(self: *const DBMetadataPage, allocator: std.mem.Allocator) !std.json.Parsed([]muscle.Table) {
@@ -126,8 +129,9 @@ pub const Page = extern struct {
         return ptr;
     }
 
-    pub fn to_bytes(self: *const Page) [muscle.PAGE_SIZE]u8 {
-        return std.mem.toBytes(self.*);
+    // return a serialized bytes
+    pub fn to_bytes(self: *const Page) ![muscle.PAGE_SIZE]u8 {
+        return try serde.serialize_page(self.*);
     }
 
     fn free_space(self: *const Page) u16 {
@@ -194,7 +198,7 @@ pub const Page = extern struct {
 
     pub fn update(self: *Page, cell: Cell, slot_index: SlotArrayIndex) OverflowError!void {
         const old = self.cell_at_slot(slot_index);
-        if (self.free_space() < cell.size - old.size) {
+        if (cell.size > old.size and self.free_space() < cell.size - old.size) {
             return error.Overflow;
         }
 
@@ -206,9 +210,13 @@ pub const Page = extern struct {
         });
 
         // after degramentation, self.last_used_offset should point to the cell we are updating.
+        // update slot array
+        std.mem.writeInt(SlotArrayEntry, self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)], self.last_used_offset, .little);
         self.put_cell_at_offset(cell, self.last_used_offset);
-        self.content_size -= self.content_size - old.size;
+        self.content_size -= old.size;
         self.content_size += @as(u16, @intCast(cell.size));
+
+        std.debug.print("After put_cell_at_offset: {any}", .{self});
     }
 
     // slot array stores offsets for cell headers
@@ -409,8 +417,9 @@ pub const OverflowPage = extern struct {
         return ptr;
     }
 
-    pub fn to_bytes(self: *const OverflowPage) [muscle.PAGE_SIZE]u8 {
-        return std.mem.toBytes(self.*);
+    // return a serialized bytes
+    pub fn to_bytes(self: *const OverflowPage) ![muscle.PAGE_SIZE]u8 {
+        return try serde.serialize_page(self.*);
     }
 };
 
@@ -423,12 +432,12 @@ pub const FreePage = extern struct {
         assert(@sizeOf(FreePage) == muscle.PAGE_SIZE);
     }
 
-    pub fn cast_from(bytes: *const [muscle.PAGE_SIZE]u8) *const FreePage {
-        const ptr: *FreePage = @constCast(@ptrCast(@alignCast(bytes)));
-        return ptr;
+    pub fn init() FreePage {
+        return FreePage{ .next = 0, .padding = undefined };
     }
 
-    pub fn to_bytes(self: *const FreePage) [muscle.PAGE_SIZE]u8 {
-        return std.mem.toBytes(self.*);
+    // return a serialized bytes
+    pub fn to_bytes(self: *const FreePage) ![muscle.PAGE_SIZE]u8 {
+        return try serde.serialize_page(self.*);
     }
 };

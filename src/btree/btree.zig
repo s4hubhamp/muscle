@@ -75,24 +75,14 @@ pub const BTree = struct {
             leaf = leaf_parent_info.child;
         }
 
-        var leaf_node = (try self.pager.get_page(page.Page, leaf)).*;
+        var leaf_node = try self.pager.get_page(page.Page, leaf);
 
         switch (leaf_node.search(key)) {
             .found => |insert_at_slot| {
                 std.debug.print("found: {} \n", .{insert_at_slot});
+                var called_balance = false;
                 leaf_node.update(cell, insert_at_slot) catch {
-                    try self.balance(
-                        leaf,
-                        leaf_parent,
-                        leaf_index,
-                        &path,
-                        .{ .cell = cell, .should_be_inserted_at = insert_at_slot },
-                    );
-                };
-            },
-            .go_down => |insert_at_slot| {
-                std.debug.print("go down: {} \n", .{insert_at_slot});
-                leaf_node.insert(cell, insert_at_slot) catch {
+                    called_balance = true;
                     try self.balance(
                         leaf,
                         leaf_parent,
@@ -102,7 +92,27 @@ pub const BTree = struct {
                     );
                 };
 
-                try self.pager.update_page(leaf, leaf_node.to_bytes());
+                if (!called_balance) {
+                    try self.pager.update_page(leaf, &leaf_node);
+                }
+            },
+            .go_down => |insert_at_slot| {
+                std.debug.print("go down: {} \n", .{insert_at_slot});
+                var called_balance = false;
+                leaf_node.insert(cell, insert_at_slot) catch {
+                    called_balance = true;
+                    try self.balance(
+                        leaf,
+                        leaf_parent,
+                        leaf_index,
+                        &path,
+                        .{ .cell = cell, .should_be_inserted_at = insert_at_slot },
+                    );
+                };
+
+                if (!called_balance) {
+                    try self.pager.update_page(leaf, &leaf_node);
+                }
             },
         }
     }

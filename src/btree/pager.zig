@@ -2,6 +2,7 @@ const std = @import("std");
 const muscle = @import("muscle");
 const page = @import("./page.zig");
 const IO = @import("../io.zig").IO;
+const serde = @import("../serialize_deserialize.zig");
 
 const assert = std.debug.assert;
 const print = std.debug.print;
@@ -49,8 +50,8 @@ pub const Pager = struct {
 
         if (bytes_read == 0) {
             const initial_metadata = DBMetadataPage.init();
-            const bytes = std.mem.asBytes(&initial_metadata);
-            for (bytes, 0..bytes.len) |*item, i| metadata_buffer[i] = item.*;
+            const bytes = try initial_metadata.to_bytes();
+            for (&bytes, 0..bytes.len) |*item, i| metadata_buffer[i] = item.*;
             _ = try io.write(0, &metadata_buffer);
         }
 
@@ -153,7 +154,7 @@ pub const Pager = struct {
     // check if we reached the max dirty pages capacity, if yes we need to commit
     // existing changes.
     // Record the page's original state inside of the journal file.
-    pub fn update_page(self: *Pager, page_number: u32, bytes: [muscle.PAGE_SIZE]u8) !void {
+    pub fn update_page(self: *Pager, page_number: u32, page_ptr: anytype) !void {
         // A following scenario can happen: we've given a page reference to someone but they did not
         // call update page quick enough and in between their page gets evicted.
         // Hence, we can't always expect the page which we are going to update to be inside cache.
@@ -180,7 +181,8 @@ pub const Pager = struct {
         try self.journal.record(page_number, original.*);
 
         // update cache with latest version
-        try self.cache.put(page_number, bytes, self.dirty_pages.constSlice());
+        const serialized_bytes: [muscle.PAGE_SIZE]u8 = try page_ptr.to_bytes();
+        try self.cache.put(page_number, serialized_bytes, self.dirty_pages.constSlice());
     }
 
     fn get_page_bytes_from_cache_or_disk(self: *Pager, page_number: u32) !*const [muscle.PAGE_SIZE]u8 {
@@ -200,13 +202,15 @@ pub const Pager = struct {
         return self.cache.get(page_number).?;
     }
 
-    pub fn get_page(self: *Pager, comptime T: type, page_number: u32) !*const T {
-        const page_: *const T = @ptrCast(@alignCast(try self.get_page_bytes_from_cache_or_disk(page_number)));
-        return page_;
+    pub fn get_page(self: *Pager, comptime T: type, page_number: u32) !T {
+        // deserialize the page inside the cache and return it.
+        // @speed: This returns a Copy
+        const page_struct = serde.deserialize_page(T, try self.get_page_bytes_from_cache_or_disk(page_number));
+        return page_struct;
     }
 
     pub fn alloc_free_page(self: *Pager) !u32 {
-        var metadata = (try self.get_page(DBMetadataPage, 0)).*;
+        var metadata = try self.get_page(DBMetadataPage, 0);
         var free_page_number: u32 = undefined;
 
         if (metadata.first_free_page == 0) {
@@ -226,20 +230,19 @@ pub const Pager = struct {
 
             free_page_number = metadata.total_pages;
             // put inside the cache
-            const buffer = [_]u8{0} ** muscle.PAGE_SIZE;
-            try self.cache.put(free_page_number, buffer, self.dirty_pages.constSlice());
+            try self.cache.put(free_page_number, try FreePage.init().to_bytes(), self.dirty_pages.constSlice());
             // mark dirty
             try self.dirty_pages.append(free_page_number);
             // save to journal
             self.journal.maybe_set_first_newly_alloced_page(free_page_number);
             metadata.total_pages += 1;
-            try self.update_page(0, metadata.to_bytes());
+            try self.update_page(0, &metadata);
             return free_page_number;
         } else {
             free_page_number = metadata.first_free_page;
-            const free_page = FreePage.cast_from(try self.get_page_bytes_from_cache_or_disk(free_page_number));
+            const free_page = try self.get_page(FreePage, free_page_number);
             metadata.first_free_page = free_page.next;
-            try self.update_page(0, metadata.to_bytes());
+            try self.update_page(0, &metadata);
             return free_page_number;
         }
     }

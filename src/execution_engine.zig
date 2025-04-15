@@ -52,27 +52,27 @@ pub const ExecutionEngine = struct {
         switch (query) {
             Query.CreateTable => |payload| {
                 is_update_query = true;
-                self.create_table(metadata_page, tables, payload) catch |err| {
+                self.create_table(&metadata_page, tables, payload) catch |err| {
                     client_err = err;
                     rollback_partially_done_updates = true;
                 };
             },
             Query.DropTable => |payload| {
                 is_update_query = true;
-                self.drop_table(metadata_page, tables, payload) catch |err| {
+                self.drop_table(&metadata_page, tables, payload) catch |err| {
                     client_err = err;
                     rollback_partially_done_updates = true;
                 };
             },
             Query.Insert => |payload| {
                 is_update_query = true;
-                self.insert(metadata_page, tables, payload) catch |err| {
+                self.insert(&metadata_page, tables, payload) catch |err| {
                     client_err = err;
                     rollback_partially_done_updates = true;
                 };
             },
             Query.Select => |payload| {
-                self.select(metadata_page, tables, payload) catch |err| {
+                self.select(&metadata_page, tables, payload) catch |err| {
                     client_err = err;
                 };
             },
@@ -123,7 +123,7 @@ pub const ExecutionEngine = struct {
         const root_page_number = try self.pager.alloc_free_page();
         // update root page
         const root_page = page.Page.init();
-        try self.pager.update_page(root_page_number, root_page.to_bytes());
+        try self.pager.update_page(root_page_number, &root_page);
 
         // append a new table entry
         try tables_list.append(muscle.Table{
@@ -137,7 +137,7 @@ pub const ExecutionEngine = struct {
         // update tables
         try metadata_page_copy.set_tables(self.allocator, tables_list.items[0..]);
         // put updates into cache
-        try self.pager.update_page(0, metadata_page_copy.to_bytes());
+        try self.pager.update_page(0, &metadata_page_copy);
     }
 
     fn drop_table(
@@ -211,7 +211,7 @@ pub const ExecutionEngine = struct {
         table.?.last_insert_rowid += 1;
         var updated_metadata = metadata_page.*;
         try updated_metadata.set_tables(self.allocator, tables);
-        try self.pager.update_page(0, updated_metadata.to_bytes());
+        try self.pager.update_page(0, &updated_metadata);
     }
 
     fn select(

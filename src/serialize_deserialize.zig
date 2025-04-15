@@ -5,10 +5,8 @@ const InsertPayload = @import("./execution_engine.zig").InsertPayload;
 
 const assert = std.debug.assert;
 
-pub fn serialize_page(page_struct: anytype) ![muscle.PageNumber]u8 {
-    assert(@sizeOf(page_struct) == muscle.PageNumber);
-
-    var buffer: [muscle.PageNumber]u8 = undefined;
+pub fn serialize_page(page_struct: anytype) ![muscle.PAGE_SIZE]u8 {
+    var buffer: [muscle.PAGE_SIZE]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
     var writer = stream.writer();
 
@@ -17,7 +15,7 @@ pub fn serialize_page(page_struct: anytype) ![muscle.PageNumber]u8 {
 }
 
 pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
-    assert(buffer.len == muscle.PageNumber);
+    assert(buffer.len == muscle.PAGE_SIZE);
 
     var stream = std.io.fixedBufferStream(buffer);
     var reader = stream.reader();
