@@ -72,7 +72,11 @@ pub const DBMetadataPage = extern struct {
 pub const Page = extern struct {
     // All fields except content are part of the Page header
     const HEADER_SIZE = 10;
-    const CONTENT_MAX_SIZE = 4086;
+    pub const CONTENT_MAX_SIZE = 4086;
+
+    // Max offset is 4086
+    const SlotArrayEntry = u16;
+    const SlotArrayIndex = u16;
 
     // length of slot array
     num_slots: u16,
@@ -86,6 +90,8 @@ pub const Page = extern struct {
     // If we have some empty cells in the middle those cells will not account in the calculation of the size
     content_size: u16,
     // content is slot array + cells
+    // slot array stores the offset to cells from start of the content.
+    // for now they are all u16's.
     content: [4086]u8,
 
     // TODO instead of content being fixed length if we have padding parameter here
@@ -128,9 +134,10 @@ pub const Page = extern struct {
         return CONTENT_MAX_SIZE - self.content_size;
     }
 
-    const OverflowError = error.Overflow;
-    // try to push the cell, if we can't push it we will return Overflow error.
-    pub fn push_cell(self: *Page, cell: Cell) OverflowError!void {
+    const OverflowError = error{Overflow};
+
+    // try to insert the cell, if we can't insert it we will return Overflow error.
+    pub fn insert(self: *Page, cell: Cell, slot_index: SlotArrayIndex) OverflowError!void {
         // New cell gets inserted at an last_used_offset
         // 1. if the free_space can't contain sizeOf(u32) + sizeOf(cell) then return
         //      overflow error.
@@ -140,67 +147,280 @@ pub const Page = extern struct {
         //      defragment first and then insert.
 
         if (self.free_space() < cell.size) {
-            return OverflowError;
+            return error.Overflow;
         }
 
-        const sizeof_slot_array = @sizeOf(u32) * self.num_slots;
-        const free_space_before_last_used_offset =
-            CONTENT_MAX_SIZE - self.last_used_offset - sizeof_slot_array;
+        const sizeof_slot_array = @sizeOf(SlotArrayEntry) * self.num_slots;
+        const free_space_before_last_used_offset = self.last_used_offset - sizeof_slot_array;
 
         if (free_space_before_last_used_offset < cell.size) {
-            // defragment first and then push
-            // not implemented
-            unreachable;
+            // this means that we have space but we need to re-adjust cells
+            self.defragment(null);
         }
 
-        // push
-        const slot_index = self.num_slots * @sizeOf(u32);
         // calculate new last_used_offset
-        self.last_used_offset = self.last_used_offset - cell.size;
-        // keep the cell start at slot_index
-        self.content[slot_index] = self.last_used_offset;
-        // keep the cell
-        const cell_bytes = std.mem.toBytes(cell);
-        for (0..cell_bytes.len) |i| {
-            self.content[self.last_used_offset + i] = cell_bytes[i];
+        self.last_used_offset = self.last_used_offset - @as(u16, @intCast(cell.size));
+        // update slot array
+        // if we are inserting somewhere in middle then need to shift elements after the slot_index
+        if (slot_index < self.num_slots) {
+            var index = self.num_slots;
+            while (index >= slot_index) {
+                const dest_ptr: *[2]u8 = @ptrCast(&self.content[index]);
+                const src_ptr: *[2]u8 = @ptrCast(&self.content[index - 1]);
+
+                std.mem.swap([2]u8, dest_ptr, src_ptr);
+                index -= 1;
+            }
+        }
+
+        std.mem.writeInt(SlotArrayEntry, self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)], self.last_used_offset, .little);
+
+        // place the cell
+        {
+            //  palce the cell size
+            std.mem.writeInt(
+                @TypeOf(cell.size),
+                self.content[self.last_used_offset..][0..2],
+                cell.size,
+                .little,
+            );
+            //  place the left child
+            std.mem.writeInt(
+                @TypeOf(cell.left_child),
+                self.content[self.last_used_offset + 2 ..][0..4],
+                cell.left_child,
+                .little,
+            );
+            //  place the cell content
+            @memcpy(self.content[self.last_used_offset + 2 + 4 ..][0..cell.content.len], cell.content);
         }
 
         self.num_slots += 1;
-        self.content_size += cell.size;
+        self.content_size += @as(u16, @intCast(cell.size));
     }
 
-    fn cell_header_at_offset() void {}
-    fn cell_at_offset() void {}
+    pub fn update(self: *Page, cell: Cell, slot_index: SlotArrayIndex) OverflowError!void {
+        const old = self.cell_at_slot(slot_index);
+        if (self.free_space() < cell.size - old.size) {
+            return error.Overflow;
+        }
+
+        // @speed: to make life simple we are calling defragment. Not sure this is optimal
+        self.defragment(.{
+            .slot_index = slot_index,
+            .new_size = cell.size,
+            .last_used_offset = CONTENT_MAX_SIZE - (self.content_size - old.size + cell.size),
+        });
+        // now here self.last_used_offset should point to the cell we are updating.
+        // place the cell
+        {
+            // palce the cell size
+            std.mem.writeInt(
+                @TypeOf(cell.size),
+                self.content[self.last_used_offset..][0..2],
+                cell.size,
+                .little,
+            );
+            // place the left child
+            std.mem.writeInt(
+                @TypeOf(cell.left_child),
+                self.content[self.last_used_offset + 2 ..][0..4],
+                cell.left_child,
+                .little,
+            );
+            // place the cell content
+            @memcpy(self.content[self.last_used_offset + 2 + 4 ..][0..cell.content.len], cell.content);
+        }
+
+        self.content_size -= self.content_size - old.size;
+        self.content_size += @as(u16, @intCast(cell.size));
+    }
+
     // slot array stores offsets for cell headers
     // with slot array we reach to cell header and from their we know the cell size and thus
     // we can convert a slice into `Cell`
-    fn cell_at_slot() void {}
+    pub fn cell_at_slot(self: *const Page, slot_index: SlotArrayIndex) Cell {
+        assert(slot_index < self.num_slots);
+
+        const cell_offset = std.mem.readInt(
+            u16,
+            self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)],
+            .little,
+        );
+
+        // read cell size
+        const cell_size = std.mem.readInt(
+            u16,
+            self.content[cell_offset..][0..@sizeOf(u16)],
+            .little,
+        );
+        const left_child = std.mem.readInt(
+            muscle.PageNumber,
+            self.content[cell_offset + @sizeOf(u16) ..][0..@sizeOf(muscle.PageNumber)],
+            .little,
+        );
+
+        const cell = Cell{
+            .size = cell_size,
+            .left_child = left_child,
+            .content = self.content[cell_offset + @sizeOf(u16) + @sizeOf(muscle.PageNumber) ..],
+        };
+
+        return cell;
+    }
 
     /// Returns the child at the given `index`.
-    fn child() void {}
+    pub fn child(self: *const Page, slot_index: SlotArrayIndex) muscle.PageNumber {
+        if (slot_index == self.num_slots) {
+            return self.right_child;
+        } else {
+            return self.cell_at_slot(slot_index).left_child;
+        }
+    }
+
+    const SearchResult = union(enum) {
+        found: SlotArrayIndex,
+        go_down: SlotArrayIndex,
+    };
+    pub fn search(
+        self: *const Page,
+        key: []const u8,
+    ) SearchResult {
+        if (self.num_slots == 0) {
+            return SearchResult{
+                .go_down = 0,
+            };
+        }
+
+        var low: u16 = 0;
+        var high: u16 = self.num_slots - 1;
+        var mid: u16 = undefined;
+
+        while (low <= high) {
+            mid = (low + high) / 2;
+            const cell = self.cell_at_slot(mid);
+
+            // TODO
+            // we are always comparing RowId
+            const value = cell.get_keys_slice(.index);
+            const ordering = std.mem.order(u8, key, value);
+            switch (ordering) {
+                .eq => return SearchResult{ .found = mid },
+                .lt => {
+                    high = mid - 1;
+                },
+                .gt => {
+                    low = mid + 1;
+                },
+            }
+        }
+
+        return SearchResult{
+            .go_down = low,
+        };
+    }
 
     //fn is_underflow(self: *const Page) bool {}
     //fn is_overflow(self: *const Page) void {}
 
-    fn is_leaf(self: *const Page) bool {
+    pub fn is_leaf(self: *const Page) bool {
         return self.right_child == 0;
     }
 
     // arrange cells towords the end
-    fn defragment() void {}
+    fn defragment(
+        self: *Page,
+        updating_cell_info: ?struct { last_used_offset: u16, slot_index: SlotArrayEntry, new_size: u16 },
+    ) void {
+        print("before defragmenting {any} last_used_offset: {} updating_cell_info: {any}\n", .{
+            self.content,
+            self.last_used_offset,
+            updating_cell_info,
+        });
 
-    // parse `content` and iterate over `SlotArray` and `Cells`
-    pub fn iterate_cells(self: *Page) void {
-        _ = self;
+        var updated_content = [_]u8{0} ** Page.CONTENT_MAX_SIZE;
+        var start: u16 = undefined;
+        var cell: Cell = undefined;
+        var cell_offset: u16 = undefined;
+
+        // if we get updating_cell_info reserve the space at start
+        if (updating_cell_info) |info| {
+            start = info.last_used_offset;
+            self.last_used_offset = info.last_used_offset;
+
+            // update the slot array
+            start += info.new_size;
+            std.mem.writeInt(
+                SlotArrayEntry,
+                self.content[info.slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)],
+                start,
+                .little,
+            );
+        } else {
+            start = Page.CONTENT_MAX_SIZE - self.content_size;
+            self.last_used_offset = start;
+        }
+
+        var slot_index: u16 = 0;
+        while (slot_index < self.num_slots) : (slot_index += 1) {
+            if (updating_cell_info != null) {
+                if (slot_index == updating_cell_info.?.slot_index) continue;
+            }
+
+            cell = self.cell_at_slot(slot_index);
+            cell_offset = std.mem.readInt(
+                u16,
+                self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)],
+                .little,
+            );
+
+            // copy cell and update slot array
+            @memcpy(updated_content[start..][0..cell.size], self.content[cell_offset..][0..cell.size]);
+            std.mem.writeInt(
+                SlotArrayEntry,
+                self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)],
+                start,
+                .little,
+            );
+
+            start += cell.size;
+        }
+
+        self.content = updated_content;
+        print("after defragmenting {any} last_used_offset: {}\n", .{ self.content, self.last_used_offset });
     }
 };
 
-const Cell = struct {
+pub const Cell = struct {
     // tatal size of cell HEADER_SIZE + content size
+    // this must be placed at first
     size: u16,
-    left_page: muscle.PageNumber,
-    is_overflow: bool,
-    content: []u8,
+    left_child: muscle.PageNumber,
+    //
+    // For main table cells, content is (RowId + Row).
+    // For indexes cell content is (RowId + Indexed field value).
+    // By always storing RowId first we get to actual mapped content by doing content[@sizeOf(RowId)..]
+    //
+    // slot array element stores the offsets from the start of the content
+    content: []const u8,
+
+    pub fn init(content: []const u8) Cell {
+        return Cell{
+            .size = @as(u16, @intCast(6 + content.len)),
+            .left_child = 0,
+            .content = content,
+        };
+    }
+
+    pub fn get_keys_slice(self: *const Cell, page_type: enum { index, table }) []const u8 {
+        if (page_type == .index) {
+            return self.content[0..@sizeOf(muscle.RowId)];
+        } else {
+            return self.content[@sizeOf(muscle.RowId)..];
+        }
+    }
+
+    // pub fn to_bytes(self: *const Cell) []u8 {}
 };
 
 pub const OverflowPage = extern struct {

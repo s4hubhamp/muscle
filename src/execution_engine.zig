@@ -1,8 +1,11 @@
 const std = @import("std");
-const print = std.debug.print;
 const muscle = @import("muscle");
 const Pager = @import("./btree/pager.zig").Pager;
 const page = @import("./btree/page.zig");
+const BTree = @import("./btree/btree.zig").BTree;
+
+const print = std.debug.print;
+const assert = std.debug.assert;
 
 // Execution engine is responsible to run query and return results
 // It's job is to understand the query and choose most optimal way to calculate results
@@ -17,10 +20,7 @@ pub const ExecutionEngine = struct {
         print("Calling Rollback after instance start.\n", .{});
         try pager.rollback();
 
-        return ExecutionEngine{
-            .allocator = allocator,
-            .pager = pager,
-        };
+        return ExecutionEngine{ .allocator = allocator, .pager = pager };
     }
 
     pub fn deinit(self: *ExecutionEngine) void {
@@ -68,6 +68,11 @@ pub const ExecutionEngine = struct {
                 self.insert(metadata_page, tables, payload) catch |err| {
                     client_err = err;
                     rollback_partially_done_updates = true;
+                };
+            },
+            Query.Select => |payload| {
+                self.select(metadata_page, tables, payload) catch |err| {
+                    client_err = err;
                 };
             },
             else => @panic("not implemented"),
@@ -122,7 +127,7 @@ pub const ExecutionEngine = struct {
         // append a new table entry
         try tables_list.append(muscle.Table{
             .root = root_page_number,
-            .row_id = 1, // row id will start from 1
+            .last_insert_rowid = 0, // row id will start from 1
             .name = table_name,
             .columns = columns,
             .indexes = &[0]muscle.Index{},
@@ -146,19 +151,91 @@ pub const ExecutionEngine = struct {
         _ = payload;
     }
 
+    // TODO
+    // const CompareFn = fn (key: []u8, val: []u8) union(enum) { equal, greater, less };
+
     fn insert(
         self: *ExecutionEngine,
-        metadata: *const page.DBMetadataPage,
+        metadata_page: *const page.DBMetadataPage,
         tables: []muscle.Table,
         payload: InsertPayload,
     ) !void {
         // 1. find the root page number
         // 2. call the btree to insert
-        _ = self;
-        _ = metadata;
-        _ = tables;
-        _ = payload;
-        unreachable;
+
+        var table: ?muscle.Table = null;
+        for (tables) |t| {
+            if (std.mem.eql(u8, t.name, payload.table_name)) {
+                table = t;
+            }
+        }
+
+        if (table == null) {
+            return error.TableNotFound;
+        }
+
+        // the validation against schema should happen here.
+        //
+        // the validation for uniqueness will happen inside btree.
+        // Let's take two scenarios.
+        // 1. Single column index (unique and non unique)
+        // 2. Multi column index  (unique and non unique)
+        //
+        // Let's say we have an unique index on `colum 1` then it means that our index_col_1
+        // should not allow duplicate value for column 1.
+        // I think we have to first scan the index to check if key already exists.
+        // If it does not exist then only we will call btree.insert on a table.
+        //
+        // for now we don't have any indexes, so we will not do any validation.
+        //
+
+        // If the passed payload size is greater than max content that a single page can hold
+        // this will overflow.
+        // so the max size of a single row for now is equal to `page.Page.CONTENT_MAX_SIZE`
+        // This is important because our btree.balance function operates on only one overflow cell as
+        // argument.
+        var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
+
+        const row_id = table.?.last_insert_rowid + 1;
+        const serialized_row_id = serialize_u64(row_id);
+        try buffer.appendSlice(&serialized_row_id);
+
+        try serialize_row(&buffer, table.?, payload);
+
+        var btree = BTree.init(&self.pager, self.allocator);
+        try btree.insert(
+            table.?.root,
+            buffer.constSlice()[0..8],
+            buffer.constSlice(),
+        );
+
+        // update metadata
+        table.?.last_insert_rowid += 1;
+        var updated_metadata = metadata_page.*;
+        try updated_metadata.set_tables(self.allocator, tables);
+        try self.pager.update_page(0, updated_metadata.to_bytes());
+    }
+
+    fn select(
+        self: *ExecutionEngine,
+        _: *const page.DBMetadataPage,
+        tables: []muscle.Table,
+        payload: SelectPayload,
+    ) !void {
+        var table: ?muscle.Table = null;
+        for (tables) |t| {
+            if (std.mem.eql(u8, t.name, payload.table_name)) {
+                table = t;
+            }
+        }
+
+        if (table == null) {
+            return error.TableNotFound;
+        }
+
+        // this will be to find the leftmost node and then just traverse the leaf node's
+        // using .next pointers
+        print("{any}\n", .{self.pager.get_page(page.Page, table.?.root)});
     }
 };
 
@@ -176,7 +253,13 @@ const DropIndexPayload = struct {};
 const InsertPayload = struct {
     table_name: []const u8,
     columns: []const muscle.Column,
-    values: []const u32,
+    values: []const muscle.Value,
+};
+
+const SelectPayload = struct {
+    table_name: []const u8,
+    // columns: []const muscle.Column,
+    // limit: usize
 };
 
 pub const Query = union(enum) {
@@ -184,4 +267,89 @@ pub const Query = union(enum) {
     DropTable: DropTablePayload,
     DropIndex: DropIndexPayload,
     Insert: InsertPayload,
+    Select: SelectPayload,
 };
+
+fn serialize_row(
+    buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE),
+    table: muscle.Table,
+    payload: InsertPayload,
+) !void {
+    assert(payload.columns.len == payload.values.len);
+
+    for (table.columns) |column| {
+        var found = false;
+        for (payload.columns, 0..) |col, i| {
+            if (std.mem.eql(u8, column.name, col.name)) {
+                found = true;
+
+                // TODO we are not validating against data type. where do we check if the
+                // data type on column definition is correct.
+                // TODO we are also not validating to check if the text length is less than
+                // equal to set length on Text like columns (TEXT, BIN)
+
+                // serialize and add the value to buffer
+                try serailize_val(buffer, payload.values[i]);
+            }
+        }
+
+        // if the value is not provided in payload
+        // we will try to use default value
+        if (!found) {
+            switch (column.default) {
+                .NULL => {
+                    const default_null_value = muscle.Value{ .NULL = {} };
+                    // if column has non null constraint then we can't set the value to null
+                    if (column.not_null) return error.ValueNotProvided;
+                    try serailize_val(buffer, default_null_value);
+                },
+                else => {
+                    unreachable;
+                },
+            }
+        }
+    }
+}
+
+fn serailize_val(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
+    switch (val) {
+        .BIN => |blob| {
+            // len will take usize bytes
+            var tmp: [8]u8 = undefined;
+            std.mem.writeInt(usize, &tmp, blob.len, .little);
+            try buffer.appendSlice(&tmp);
+            try buffer.appendSlice(blob);
+        },
+        .INT => |i| {
+            // Int is i64 so 8 bytes
+            var tmp: [8]u8 = undefined;
+            std.mem.writeInt(i64, &tmp, i, .little);
+            try buffer.appendSlice(&tmp);
+        },
+        .REAL => |i| {
+            // Int is f64 so 8 bytes
+            var tmp: [8]u8 = undefined;
+            std.mem.writeInt(i64, &tmp, @as(i64, @bitCast(i)), .little);
+            try buffer.appendSlice(&tmp);
+        },
+        .BOOL => |b| {
+            try buffer.append(if (b) 1 else 0);
+        },
+        .TEXT => |str| {
+            // len will take usize bytes
+            var tmp: [8]u8 = undefined;
+            std.mem.writeInt(usize, &tmp, str.len, .little);
+            try buffer.appendSlice(&tmp);
+            try buffer.appendSlice(str);
+        },
+        .NULL => {
+            try buffer.append(0);
+        },
+    }
+}
+
+fn serialize_u64(int: u64) [8]u8 {
+    var tmp: [8]u8 = undefined;
+    std.mem.writeInt(u64, &tmp, int, .little);
+    return tmp;
+}

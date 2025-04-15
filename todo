@@ -1,0 +1,6 @@
+1. Correct serialization and deserialization for page types.
+        the `toBytes` method on page types is actually does not gaurantee the endianness even for extern structs. Extern structs only mean that we are gauranteed to have a same memory layout and padding rules as c compiler would and hence they are great when interfacing with c code but they don't offer the endianness gaurantees.
+    Thoughts:
+    Packed structs for large sizes such as 4096 bytes is not good idea. So We can use normal zig structs and create a generic function to serialize and deserialize as mentioned here --> https://pastebin.com/b67dz1Xz
+
+2. When we are loading something from cache we know what type of page we are loading so we can actually deserialize it and store inside the cache. And similarly serialize using generic function before commiting back to file.
