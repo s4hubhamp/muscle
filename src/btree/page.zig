@@ -134,18 +134,29 @@ pub const Page = extern struct {
         return CONTENT_MAX_SIZE - self.content_size;
     }
 
-    const OverflowError = error{Overflow};
+    fn put_cell_at_offset(self: *Page, cell: Cell, offset: SlotArrayEntry) void {
+        // @note: Order is important here as `cell_at_slot` assumes this order later to deserialize
+        // palce the cell size
+        std.mem.writeInt(
+            @TypeOf(cell.size),
+            self.content[offset..][0..2],
+            cell.size,
+            .little,
+        );
+        // place the left child
+        std.mem.writeInt(
+            @TypeOf(cell.left_child),
+            self.content[offset + 2 ..][0..4],
+            cell.left_child,
+            .little,
+        );
+        //  place the cell content
+        @memcpy(self.content[offset + 2 + 4 ..][0..cell.content.len], cell.content);
+    }
 
+    const OverflowError = error{Overflow};
     // try to insert the cell, if we can't insert it we will return Overflow error.
     pub fn insert(self: *Page, cell: Cell, slot_index: SlotArrayIndex) OverflowError!void {
-        // New cell gets inserted at an last_used_offset
-        // 1. if the free_space can't contain sizeOf(u32) + sizeOf(cell) then return
-        //      overflow error.
-        // 1. If we have enough space to keep the cell we will be placed before
-        //      last_used_offset. content_start + cell_size() -> last_used_offset;
-        // 2. If we have enough space but we need to defragment, then we will
-        //      defragment first and then insert.
-
         if (self.free_space() < cell.size) {
             return error.Overflow;
         }
@@ -172,28 +183,10 @@ pub const Page = extern struct {
                 index -= 1;
             }
         }
-
         std.mem.writeInt(SlotArrayEntry, self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)], self.last_used_offset, .little);
 
         // place the cell
-        {
-            //  palce the cell size
-            std.mem.writeInt(
-                @TypeOf(cell.size),
-                self.content[self.last_used_offset..][0..2],
-                cell.size,
-                .little,
-            );
-            //  place the left child
-            std.mem.writeInt(
-                @TypeOf(cell.left_child),
-                self.content[self.last_used_offset + 2 ..][0..4],
-                cell.left_child,
-                .little,
-            );
-            //  place the cell content
-            @memcpy(self.content[self.last_used_offset + 2 + 4 ..][0..cell.content.len], cell.content);
-        }
+        self.put_cell_at_offset(cell, self.last_used_offset);
 
         self.num_slots += 1;
         self.content_size += @as(u16, @intCast(cell.size));
@@ -211,27 +204,9 @@ pub const Page = extern struct {
             .new_size = cell.size,
             .last_used_offset = CONTENT_MAX_SIZE - (self.content_size - old.size + cell.size),
         });
-        // now here self.last_used_offset should point to the cell we are updating.
-        // place the cell
-        {
-            // palce the cell size
-            std.mem.writeInt(
-                @TypeOf(cell.size),
-                self.content[self.last_used_offset..][0..2],
-                cell.size,
-                .little,
-            );
-            // place the left child
-            std.mem.writeInt(
-                @TypeOf(cell.left_child),
-                self.content[self.last_used_offset + 2 ..][0..4],
-                cell.left_child,
-                .little,
-            );
-            // place the cell content
-            @memcpy(self.content[self.last_used_offset + 2 + 4 ..][0..cell.content.len], cell.content);
-        }
 
+        // after degramentation, self.last_used_offset should point to the cell we are updating.
+        self.put_cell_at_offset(cell, self.last_used_offset);
         self.content_size -= self.content_size - old.size;
         self.content_size += @as(u16, @intCast(cell.size));
     }
@@ -404,14 +379,6 @@ pub const Cell = struct {
     // slot array element stores the offsets from the start of the content
     content: []const u8,
 
-    pub fn init(content: []const u8) Cell {
-        return Cell{
-            .size = @as(u16, @intCast(6 + content.len)),
-            .left_child = 0,
-            .content = content,
-        };
-    }
-
     pub fn get_keys_slice(self: *const Cell, page_type: enum { index, table }) []const u8 {
         if (page_type == .index) {
             return self.content[0..@sizeOf(muscle.RowId)];
@@ -419,8 +386,6 @@ pub const Cell = struct {
             return self.content[@sizeOf(muscle.RowId)..];
         }
     }
-
-    // pub fn to_bytes(self: *const Cell) []u8 {}
 };
 
 pub const OverflowPage = extern struct {

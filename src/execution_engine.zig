@@ -3,6 +3,7 @@ const muscle = @import("muscle");
 const Pager = @import("./btree/pager.zig").Pager;
 const page = @import("./btree/page.zig");
 const BTree = @import("./btree/btree.zig").BTree;
+const serde = @import("./serialize_deserialize.zig");
 
 const print = std.debug.print;
 const assert = std.debug.assert;
@@ -196,17 +197,14 @@ pub const ExecutionEngine = struct {
         // argument.
         var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
 
-        const row_id = table.?.last_insert_rowid + 1;
-        const serialized_row_id = serialize_u64(row_id);
-        try buffer.appendSlice(&serialized_row_id);
-
-        try serialize_row(&buffer, table.?, payload);
+        // serialize row
+        const serialized = try serde.serialize_row(&buffer, table.?, table.?.last_insert_rowid + 1, payload);
 
         var btree = BTree.init(&self.pager, self.allocator);
         try btree.insert(
             table.?.root,
-            buffer.constSlice()[0..8],
-            buffer.constSlice(),
+            serialized.rowid_slice,
+            serialized.cell,
         );
 
         // update metadata
@@ -250,7 +248,7 @@ const DropTablePayload = struct {
 
 const DropIndexPayload = struct {};
 
-const InsertPayload = struct {
+pub const InsertPayload = struct {
     table_name: []const u8,
     columns: []const muscle.Column,
     values: []const muscle.Value,
@@ -269,87 +267,3 @@ pub const Query = union(enum) {
     Insert: InsertPayload,
     Select: SelectPayload,
 };
-
-fn serialize_row(
-    buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE),
-    table: muscle.Table,
-    payload: InsertPayload,
-) !void {
-    assert(payload.columns.len == payload.values.len);
-
-    for (table.columns) |column| {
-        var found = false;
-        for (payload.columns, 0..) |col, i| {
-            if (std.mem.eql(u8, column.name, col.name)) {
-                found = true;
-
-                // TODO we are not validating against data type. where do we check if the
-                // data type on column definition is correct.
-                // TODO we are also not validating to check if the text length is less than
-                // equal to set length on Text like columns (TEXT, BIN)
-
-                // serialize and add the value to buffer
-                try serailize_val(buffer, payload.values[i]);
-            }
-        }
-
-        // if the value is not provided in payload
-        // we will try to use default value
-        if (!found) {
-            switch (column.default) {
-                .NULL => {
-                    const default_null_value = muscle.Value{ .NULL = {} };
-                    // if column has non null constraint then we can't set the value to null
-                    if (column.not_null) return error.ValueNotProvided;
-                    try serailize_val(buffer, default_null_value);
-                },
-                else => {
-                    unreachable;
-                },
-            }
-        }
-    }
-}
-
-fn serailize_val(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
-    switch (val) {
-        .BIN => |blob| {
-            // len will take usize bytes
-            var tmp: [8]u8 = undefined;
-            std.mem.writeInt(usize, &tmp, blob.len, .little);
-            try buffer.appendSlice(&tmp);
-            try buffer.appendSlice(blob);
-        },
-        .INT => |i| {
-            // Int is i64 so 8 bytes
-            var tmp: [8]u8 = undefined;
-            std.mem.writeInt(i64, &tmp, i, .little);
-            try buffer.appendSlice(&tmp);
-        },
-        .REAL => |i| {
-            // Int is f64 so 8 bytes
-            var tmp: [8]u8 = undefined;
-            std.mem.writeInt(i64, &tmp, @as(i64, @bitCast(i)), .little);
-            try buffer.appendSlice(&tmp);
-        },
-        .BOOL => |b| {
-            try buffer.append(if (b) 1 else 0);
-        },
-        .TEXT => |str| {
-            // len will take usize bytes
-            var tmp: [8]u8 = undefined;
-            std.mem.writeInt(usize, &tmp, str.len, .little);
-            try buffer.appendSlice(&tmp);
-            try buffer.appendSlice(str);
-        },
-        .NULL => {
-            try buffer.append(0);
-        },
-    }
-}
-
-fn serialize_u64(int: u64) [8]u8 {
-    var tmp: [8]u8 = undefined;
-    std.mem.writeInt(u64, &tmp, int, .little);
-    return tmp;
-}

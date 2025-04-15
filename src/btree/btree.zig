@@ -62,7 +62,7 @@ pub const BTree = struct {
         self: *BTree,
         root: muscle.PageNumber,
         key: []const u8,
-        value: []const u8,
+        cell: page.Cell,
     ) !void {
         var path = try self.search(root, key);
         var leaf = root;
@@ -75,7 +75,6 @@ pub const BTree = struct {
             leaf = leaf_parent_info.child;
         }
 
-        const cell = page.Cell.init(value);
         var leaf_node = (try self.pager.get_page(page.Page, leaf)).*;
 
         switch (leaf_node.search(key)) {
