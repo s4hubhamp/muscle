@@ -26,7 +26,7 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
 // Serialize the row and returns a Cell
 pub fn serialize_row(
     buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE),
-    table: muscle.Table,
+    table: *const muscle.Table,
     rowid: muscle.RowId,
     payload: InsertPayload,
 ) !struct { cell: page.Cell, rowid_slice: []const u8 } {

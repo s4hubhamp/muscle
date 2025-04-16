@@ -163,8 +163,8 @@ pub const ExecutionEngine = struct {
         // 1. find the root page number
         // 2. call the btree to insert
 
-        var table: ?muscle.Table = null;
-        for (tables) |t| {
+        var table: ?*muscle.Table = null;
+        for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
                 table = t;
             }
