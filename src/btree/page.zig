@@ -74,10 +74,10 @@ pub const DBMetadataPage = extern struct {
 //
 pub const Page = extern struct {
     // All fields except content are part of the Page header
-    const HEADER_SIZE = 10;
-    pub const CONTENT_MAX_SIZE = 4086;
+    const HEADER_SIZE = 18;
+    pub const CONTENT_MAX_SIZE = 4078;
 
-    // Max offset is 4086
+    // Max offset is CONTENT_MAX_SIZE
     const SlotArrayEntry = u16;
     const SlotArrayIndex = u16;
 
@@ -87,6 +87,10 @@ pub const Page = extern struct {
     last_used_offset: u16,
     // for internal btree node the rightmost child node
     right_child: muscle.PageNumber,
+    // for leaf nodes sibling pointers
+    // @space: for internal nodes we are wasting 8 bytes here
+    left: muscle.PageNumber,
+    right: muscle.PageNumber,
     // used space by the content
     // used to determine whether page is overflow or not
     // this tells about the size that is in use.
@@ -95,16 +99,12 @@ pub const Page = extern struct {
     // content is slot array + cells
     // slot array stores the offset to cells from start of the content.
     // for now they are all u16's.
-    content: [4086]u8,
-
-    // TODO instead of content being fixed length if we have padding parameter here
-    // we don't have to work with entire content every time we need to do updates
-    // or comparisons.
+    content: [4078]u8,
 
     comptime {
         assert(@alignOf(Page) == 4);
         assert(@sizeOf(Page) == muscle.PAGE_SIZE);
-        assert(HEADER_SIZE == 10);
+        assert(CONTENT_MAX_SIZE + HEADER_SIZE == muscle.PAGE_SIZE);
     }
 
     // when we insert some key inside the parent or initially inside the leaf it can
@@ -120,6 +120,8 @@ pub const Page = extern struct {
             .last_used_offset = CONTENT_MAX_SIZE,
             .content_size = 0,
             .right_child = 0, // page number
+            .left = 0,
+            .right = 0,
             .content = [_]u8{0} ** CONTENT_MAX_SIZE,
         };
     }
@@ -403,6 +405,7 @@ pub const OverflowPage = extern struct {
     next: u32 = 0,
     // btyes
     content: [4088]u8 = [_]u8{0} ** 4088,
+
     comptime {
         assert(@alignOf(Page) == 4);
         assert(@sizeOf(Page) == muscle.PAGE_SIZE);
