@@ -80,29 +80,29 @@ pub const BTree = struct {
         var leaf_node = try self.pager.get_page(page.Page, leaf);
 
         switch (leaf_node.search(key)) {
-            .found => |insert_at_slot| {
-                std.debug.print("found: {} \n", .{insert_at_slot});
-                var called_balance = false;
-                leaf_node.update(cell, insert_at_slot) catch {
-                    called_balance = true;
+            .found => |update_at_slot| {
+                //std.debug.print("update_at_slot: {} \n", .{update_at_slot});
+                var overflowing = false;
+                leaf_node.update(cell, update_at_slot) catch {
+                    overflowing = true;
                     try self.balance(
                         leaf,
                         leaf_parent,
                         leaf_index,
                         &path,
-                        .{ .cell = cell, .should_be_inserted_at = insert_at_slot },
+                        .{ .cell = cell, .should_be_inserted_at = update_at_slot },
                     );
                 };
 
-                if (!called_balance) {
+                if (!overflowing) {
                     try self.pager.update_page(leaf, &leaf_node);
                 }
             },
             .go_down => |insert_at_slot| {
-                std.debug.print("go down: {} \n", .{insert_at_slot});
-                var called_balance = false;
+                //std.debug.print("insert_at_slot: {} \n", .{insert_at_slot});
+                var overflowing = false;
                 leaf_node.insert(cell, insert_at_slot) catch {
-                    called_balance = true;
+                    overflowing = true;
                     try self.balance(
                         leaf,
                         leaf_parent,
@@ -112,11 +112,13 @@ pub const BTree = struct {
                     );
                 };
 
-                if (!called_balance) {
+                if (!overflowing) {
                     try self.pager.update_page(leaf, &leaf_node);
                 }
             },
         }
+
+        //std.debug.print("Saved updated page: {any}\n", .{leaf_node});
     }
 
     fn balance(
@@ -135,6 +137,8 @@ pub const BTree = struct {
         _ = child_index;
         _ = path;
         _ = overflowing_cell_info;
+
+        unreachable;
     }
 };
 

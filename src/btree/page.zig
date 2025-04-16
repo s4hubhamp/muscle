@@ -30,11 +30,6 @@ pub const DBMetadataPage = extern struct {
         };
     }
 
-    pub fn cast_from(bytes: *[muscle.PAGE_SIZE]u8) *const DBMetadataPage {
-        const ptr: *DBMetadataPage = @constCast(@ptrCast(@alignCast(bytes)));
-        return ptr;
-    }
-
     // return a serialized bytes
     pub fn to_bytes(self: *const DBMetadataPage) ![muscle.PAGE_SIZE]u8 {
         return try serde.serialize_page(self.*);
@@ -91,6 +86,7 @@ pub const Page = extern struct {
     // @space: for internal nodes we are wasting 8 bytes here
     left: muscle.PageNumber,
     right: muscle.PageNumber,
+    // content size is size of slot array + cells
     // used space by the content
     // used to determine whether page is overflow or not
     // this tells about the size that is in use.
@@ -124,11 +120,6 @@ pub const Page = extern struct {
             .right = 0,
             .content = [_]u8{0} ** CONTENT_MAX_SIZE,
         };
-    }
-
-    pub fn cast_from(bytes: *[muscle.PAGE_SIZE]u8) *const Page {
-        const ptr: *Page = @constCast(@ptrCast(@alignCast(bytes)));
-        return ptr;
     }
 
     // return a serialized bytes
@@ -189,12 +180,19 @@ pub const Page = extern struct {
                 index -= 1;
             }
         }
-        std.mem.writeInt(SlotArrayEntry, self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)], self.last_used_offset, .little);
+
+        std.mem.writeInt(
+            SlotArrayEntry,
+            self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)],
+            self.last_used_offset,
+            .little,
+        );
 
         // place the cell
         self.put_cell_at_offset(cell, self.last_used_offset);
 
         self.num_slots += 1;
+        self.content_size += @sizeOf(SlotArrayEntry);
         self.content_size += @as(u16, @intCast(cell.size));
     }
 
@@ -205,11 +203,7 @@ pub const Page = extern struct {
         }
 
         // @speed: to make life simple we are calling defragment. Not sure this is optimal
-        self.defragment(.{
-            .slot_index = slot_index,
-            .new_size = cell.size,
-            .last_used_offset = CONTENT_MAX_SIZE - (self.content_size - old.size + cell.size),
-        });
+        self.defragment(.{ .slot_index = slot_index, .old_size = old.size, .new_size = cell.size });
 
         // after degramentation, self.last_used_offset should point to the cell we are updating.
         // update slot array
@@ -218,7 +212,7 @@ pub const Page = extern struct {
         self.content_size -= old.size;
         self.content_size += @as(u16, @intCast(cell.size));
 
-        std.debug.print("After put_cell_at_offset: {any}", .{self});
+        //std.debug.print("After put_cell_at_offset: {any}", .{self});
     }
 
     // slot array stores offsets for cell headers
@@ -315,38 +309,35 @@ pub const Page = extern struct {
     // arrange cells towords the end
     fn defragment(
         self: *Page,
-        updating_cell_info: ?struct { last_used_offset: u16, slot_index: SlotArrayEntry, new_size: u16 },
+        updating_cell_info: ?struct { slot_index: SlotArrayEntry, old_size: u16, new_size: u16 },
     ) void {
-        print("before defragmenting {any} last_used_offset: {} updating_cell_info: {any}\n", .{
-            self.content,
-            self.last_used_offset,
-            updating_cell_info,
-        });
+        //print("before defragmenting {any} last_used_offset: {} updating_cell_info: {any}\n", .{
+        //    self.content,
+        //    self.last_used_offset,
+        //    updating_cell_info,
+        //});
 
+        const sizeof_slot_array = @sizeOf(SlotArrayEntry) * self.num_slots;
+        const sizeof_cells = self.content_size - sizeof_slot_array;
+
+        var start: u16 = Page.CONTENT_MAX_SIZE - sizeof_cells;
         var updated_content = [_]u8{0} ** Page.CONTENT_MAX_SIZE;
-        var start: u16 = undefined;
-        var cell: Cell = undefined;
-        var cell_offset: u16 = undefined;
 
         // if we get updating_cell_info reserve the space at start
         if (updating_cell_info) |info| {
-            start = info.last_used_offset;
-            self.last_used_offset = info.last_used_offset;
-
-            // update the slot array
+            const delta: i32 = info.new_size - info.old_size;
+            start = @intCast(start + delta);
+            // update last_used_offset
+            self.last_used_offset = start;
+            // rest of the cells will be put after this cell
             start += info.new_size;
-            std.mem.writeInt(
-                SlotArrayEntry,
-                self.content[info.slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)],
-                start,
-                .little,
-            );
         } else {
-            start = Page.CONTENT_MAX_SIZE - self.content_size;
             self.last_used_offset = start;
         }
 
         var slot_index: u16 = 0;
+        var cell: Cell = undefined;
+        var cell_offset: u16 = undefined;
         while (slot_index < self.num_slots) : (slot_index += 1) {
             if (updating_cell_info != null) {
                 if (slot_index == updating_cell_info.?.slot_index) continue;
@@ -372,7 +363,7 @@ pub const Page = extern struct {
         }
 
         self.content = updated_content;
-        print("after defragmenting {any} last_used_offset: {}\n", .{ self.content, self.last_used_offset });
+        //print("after defragmenting {any} last_used_offset: {}\n", .{ self.content, self.last_used_offset });
     }
 };
 
@@ -413,11 +404,6 @@ pub const OverflowPage = extern struct {
 
     fn init() OverflowPage {
         return OverflowPage{ .size = 0, .next = 0, .content = [_]u8{0} ** 4088 };
-    }
-
-    pub fn cast_from(bytes: *[muscle.PAGE_SIZE]u8) *const OverflowPage {
-        const ptr: *OverflowPage = @constCast(@ptrCast(@alignCast(bytes)));
-        return ptr;
     }
 
     // return a serialized bytes
