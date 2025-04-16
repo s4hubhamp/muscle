@@ -65,6 +65,8 @@ pub const BTree = struct {
         cell: page.Cell,
     ) !void {
         var path = try self.search(root, key);
+        defer path.deinit();
+
         var leaf = root;
         var leaf_index: u16 = undefined;
         var leaf_parent: muscle.PageNumber = undefined;
