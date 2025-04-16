@@ -75,22 +75,16 @@ pub const Pager = struct {
         _ = self;
     }
 
-    // commit gets called when we are in the middle of update and we reach dirty pages capacity
-    // this is detected when we are trying to cache a new page and cache is full with all dirty pages.
-    // since we can't evict anymore we have to commit.
-    //
-    // 1. write dirty pages to the journal
-    // 2. write dirty pages to the file
-    // 3. clear journal file
-    // 4. mark dirty pages as clean
-    // If commit fails for any reason rollback will be called TODO verify all different combinations
-    // execution_completed tells us that this is the call from execution engine, which means that need to
-    // clear our journal file after updating database file.
+    // commit gets called when we reach `max_dirty_pages` OR before returning the results to client
+    // guaranteeing that their updates are persisted.
+    // If commit fails for any reason rollback will be called
+    // execution_completed tells us that this is the call from execution engine, in which case we need to
+    // clear our journal file.
     pub fn commit(self: *Pager, execution_completed: bool) !void {
         // for update queries even if query did not update any rows, commit is still
         // called by execution engine.
         if (self.dirty_pages.len == 0) {
-            print("Nothing to commit returning\n", .{});
+            print("Nothing to commit.\n", .{});
             return;
         }
 
@@ -115,6 +109,8 @@ pub const Pager = struct {
                 return io_err;
             };
         }
+
+        print("Persisted dirty pages.\n", .{});
 
         // clear dirty pages
         self.dirty_pages.clear();
@@ -143,6 +139,7 @@ pub const Pager = struct {
 
         // need to truncate file until first_newly_alloced
         if (self.journal.get_first_newly_alloced_page()) |first_newly_alloced| {
+            std.debug.print("Truncated file to page number: {}\n", .{first_newly_alloced});
             try self.io.truncate(first_newly_alloced);
         }
 
@@ -151,9 +148,8 @@ pub const Pager = struct {
         print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
     }
 
-    // check if we reached the max dirty pages capacity, if yes we need to commit
-    // existing changes.
-    // Record the page's original state inside of the journal file.
+    // update page inside the cache recording it's original state and
+    // when we reach max dirty pages capacity then call commit
     pub fn update_page(self: *Pager, page_number: u32, page_ptr: anytype) !void {
         // A following scenario can happen: we've given a page reference to someone but they did not
         // call update page quick enough and in between their page gets evicted.
@@ -468,5 +464,6 @@ const Journal = struct {
 
         try self.io.truncate(null);
         self.entries.clear();
+        std.debug.print("Cleared Journal.\n", .{});
     }
 };

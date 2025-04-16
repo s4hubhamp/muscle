@@ -55,7 +55,6 @@ pub const IO = struct {
             std.debug.print("Truncated file to position: {}\n", .{muscle.PAGE_SIZE * n});
             try self.file.setEndPos(muscle.PAGE_SIZE * n);
         } else {
-            std.debug.print("Reset whole file.\n", .{});
             try self.file.setEndPos(0);
         }
     }
