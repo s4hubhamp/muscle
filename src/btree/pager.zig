@@ -209,8 +209,8 @@ pub const Pager = struct {
         return page_struct;
     }
 
-    pub fn alloc_free_page(self: *Pager) !u32 {
-        var metadata = try self.get_page(DBMetadataPage, 0);
+    // find the available free page or allocate new page on disk and update passed in metadata
+    pub fn alloc_free_page(self: *Pager, metadata: *DBMetadataPage) !u32 {
         var free_page_number: u32 = undefined;
 
         if (metadata.first_free_page == 0) {
@@ -236,13 +236,11 @@ pub const Pager = struct {
             // save to journal
             self.journal.maybe_set_first_newly_alloced_page(free_page_number);
             metadata.total_pages += 1;
-            try self.update_page(0, &metadata);
             return free_page_number;
         } else {
             free_page_number = metadata.first_free_page;
             const free_page = try self.get_page(FreePage, free_page_number);
             metadata.first_free_page = free_page.next;
-            try self.update_page(0, &metadata);
             return free_page_number;
         }
     }

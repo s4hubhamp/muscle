@@ -42,7 +42,7 @@ pub const ExecutionEngine = struct {
         // Perhaps the correct thing to do is making the decoding of metadata page faster,
         // we never keep it in journal to keep the journal simpler.
         //
-        const metadata_page = try self.pager.get_page(page.DBMetadataPage, 0);
+        var metadata_page = try self.pager.get_page(page.DBMetadataPage, 0);
         const parsed = try metadata_page.parse_tables(self.allocator);
         const tables = parsed.value;
         defer {
@@ -99,14 +99,13 @@ pub const ExecutionEngine = struct {
 
     fn create_table(
         self: *ExecutionEngine,
-        metadata: *const page.DBMetadataPage,
+        metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: CreateTablePayload,
     ) !void {
         const table_name = payload.table_name;
         const columns = payload.columns;
 
-        var metadata_page_copy = metadata.*; // .* makes copy
         var tables_list = std.ArrayList(muscle.Table).init(self.allocator);
         defer {
             tables_list.deinit();
@@ -120,8 +119,8 @@ pub const ExecutionEngine = struct {
 
         try tables_list.appendSlice(tables);
 
-        const root_page_number = try self.pager.alloc_free_page();
-        // update root page
+        const root_page_number = try self.pager.alloc_free_page(metadata);
+        // initialize root page
         const root_page = page.Page.init();
         try self.pager.update_page(root_page_number, &root_page);
 
@@ -135,14 +134,14 @@ pub const ExecutionEngine = struct {
         });
 
         // update tables
-        try metadata_page_copy.set_tables(self.allocator, tables_list.items[0..]);
-        // put updates into cache
-        try self.pager.update_page(0, &metadata_page_copy);
+        try metadata.set_tables(self.allocator, tables_list.items[0..]);
+        // update metadata
+        try self.pager.update_page(0, metadata);
     }
 
     fn drop_table(
         self: *ExecutionEngine,
-        metadata: *const page.DBMetadataPage,
+        metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: DropTablePayload,
     ) !void {
@@ -157,7 +156,7 @@ pub const ExecutionEngine = struct {
 
     fn insert(
         self: *ExecutionEngine,
-        metadata_page: *const page.DBMetadataPage,
+        metadata_page: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: InsertPayload,
     ) !void {
@@ -209,14 +208,13 @@ pub const ExecutionEngine = struct {
 
         // update metadata
         table.?.last_insert_rowid += 1;
-        var updated_metadata = metadata_page.*;
-        try updated_metadata.set_tables(self.allocator, tables);
-        try self.pager.update_page(0, &updated_metadata);
+        try metadata_page.set_tables(self.allocator, tables);
+        try self.pager.update_page(0, metadata_page);
     }
 
     fn select(
         self: *ExecutionEngine,
-        _: *const page.DBMetadataPage,
+        metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: SelectPayload,
     ) !void {
