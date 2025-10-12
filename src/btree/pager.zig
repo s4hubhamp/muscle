@@ -37,7 +37,7 @@ pub const Pager = struct {
     allocator: std.mem.Allocator,
     io: IO,
     cache: PagerCache,
-    dirty_pages: std.BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT),
+    dirty_pages: std.BoundedArray(muscle.PageNumber, MAX_DIRTY_COUNT_BEFORE_COMMIT),
     journal: Journal,
 
     pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !Pager {
@@ -110,7 +110,7 @@ pub const Pager = struct {
             };
         }
 
-        print("Persisted dirty pages.\n", .{});
+        //print("Persisted dirty pages.\n", .{});
 
         // clear dirty pages
         self.dirty_pages.clear();
@@ -119,7 +119,7 @@ pub const Pager = struct {
             return error.JournalError;
         };
 
-        print("Commit successfull.\n", .{});
+        //print("Commit successfull.\n", .{});
     }
 
     // Moves the original page copies from the journal file back to the database file.
@@ -191,6 +191,11 @@ pub const Pager = struct {
             const bytes_read = self.io.read(page_number, &buffer) catch {
                 @panic("Page is not present. The call to fetch invalid page should not have been made.");
             };
+
+            if (bytes_read == 0) {
+                @panic("Page does not exist on database file.");
+            }
+
             if (bytes_read != muscle.PAGE_SIZE) @panic("Page is corrupted.");
             try self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
         }
@@ -214,7 +219,7 @@ pub const Pager = struct {
             // the idea is to return a free page number from here. later caller will call get_[page_type]
             // which internally calls `get_page_bytes_from_cache_or_disk` to get the page.
             // We need to take care of following:
-            // 1. Add this to cache Because the page is totally new we can't have it on disk yet and
+            // 1. Add this to cache Because the page is totally new we don't have it on disk yet and
             // `get_page_bytes_from_cache_or_disk` will fail
             // 2. Mark dirty so it won't get evicted.
             // 3. consider a scenario where we have allocated a new page at the end.
@@ -237,8 +242,22 @@ pub const Pager = struct {
             free_page_number = metadata.first_free_page;
             const free_page = try self.get_page(FreePage, free_page_number);
             metadata.first_free_page = free_page.next;
+            metadata.free_pages -= 1;
             return free_page_number;
         }
+    }
+
+    pub fn free(self: *Pager, metadata: *DBMetadataPage, page_number: muscle.PageNumber) !void {
+        // We should never attempt to free metadata page
+        assert(page_number > 0);
+
+        var free_page = page.FreePage.init();
+        free_page.next = metadata.first_free_page;
+        metadata.first_free_page = page_number;
+        metadata.free_pages += 1;
+
+        // record the original state inside the journal and mark dirty
+        try self.update_page(page_number, &free_page);
     }
 };
 
@@ -302,6 +321,7 @@ const PagerCache = struct {
             }
         }
 
+        // new item
         try self.cache.append(CacheItem{ .page_number = page_number, .page = buffer });
     }
 };
@@ -374,11 +394,6 @@ const Journal = struct {
         assert(BATCH_GET_SIZE <= MAX_DIRTY_COUNT_BEFORE_COMMIT);
     }
 
-    // checks for functions which are supposed to get called after rollback
-    fn assert_no_unsaved_entries(self: *Journal) void {
-        assert(self.entries.len == 0);
-    }
-
     fn get_first_newly_alloced_page(self: *const Journal) ?u32 {
         if (self.metadata.first_new_alloced_page == 0) {
             return null;
@@ -398,8 +413,6 @@ const Journal = struct {
         pages: [BATCH_GET_SIZE]OriginalPage,
         n_read: u32,
     } {
-        self.assert_no_unsaved_entries();
-
         const metadata = &self.metadata;
         var pages = [_]OriginalPage{OriginalPage{ .page_number = 0, .page = undefined }} ** BATCH_GET_SIZE;
 
@@ -452,18 +465,14 @@ const Journal = struct {
 
         // reset
         self.entries.clear();
-        print("Persisted journal.\n", .{});
-        var buf = [_]u8{0} ** muscle.PAGE_SIZE;
-        _ = try self.io.read(0, &buf);
+        //print("Persisted journal.\n", .{});
     }
 
     // clear the journal file
     // this gets called only when whole query execution is completed
     fn clear(self: *Journal) !void {
-        self.assert_no_unsaved_entries();
-
         try self.io.truncate(null);
         self.entries.clear();
-        std.debug.print("Cleared Journal.\n", .{});
+        //std.debug.print("Cleared Journal.\n", .{});
     }
 };

@@ -6,6 +6,11 @@ const InsertPayload = @import("./execution_engine.zig").InsertPayload;
 const assert = std.debug.assert;
 
 pub fn serialize_page(page_struct: anytype) ![muscle.PAGE_SIZE]u8 {
+    comptime {
+        if (@sizeOf(@TypeOf(page_struct)) != muscle.PAGE_SIZE)
+            @compileError("Struct size must equal PAGE_SIZE");
+    }
+
     var buffer: [muscle.PAGE_SIZE]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
     var writer = stream.writer();
@@ -27,17 +32,25 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
 pub fn serialize_row(
     buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE),
     table: *const muscle.Table,
-    rowid: muscle.RowId,
+    largest_rowid: muscle.RowId,
     payload: InsertPayload,
-) !struct { cell: page.Cell, rowid_slice: []const u8 } {
-    assert(payload.columns.len == payload.values.len);
-    var cell: page.Cell = undefined;
+) !struct { cell: page.Cell, rowid: muscle.RowId } {
+    var rowid = largest_rowid + 1;
+    // If rowid is provided then use it Otherwise this insert will have current largest + 1.
+    for (payload.columns, payload.values) |c, v| {
+        if (std.mem.eql(u8, c.name, "rowid")) {
+            rowid = v.INT;
+        }
+    }
 
     // serialize the row id
-    const serialized_rowid_slice = try serialize_rowid(buffer, rowid);
+    try buffer.resize(8);
+    try serialize_rowid(buffer.buffer[0..8], rowid);
 
     // serialize the payload
     for (table.columns) |column| {
+        if (std.mem.eql(u8, column.name, "rowid")) continue;
+
         var found = false;
         for (payload.columns, 0..) |col, i| {
             if (std.mem.eql(u8, column.name, col.name)) {
@@ -70,11 +83,7 @@ pub fn serialize_row(
         }
     }
 
-    cell.content = buffer.constSlice();
-    cell.size = @as(u16, @intCast(6 + cell.content.len));
-    cell.left_child = 0;
-
-    return .{ .cell = cell, .rowid_slice = serialized_rowid_slice };
+    return .{ .cell = page.Cell.init(buffer.constSlice(), null), .rowid = rowid };
 }
 
 fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
@@ -103,7 +112,7 @@ fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), va
         },
         .TEXT => |str| {
             // len will take usize bytes
-            var tmp: [8]u8 = undefined;
+            var tmp: [8]u8 = undefined; // TODO: Maybe we don't need this to be usize?
             std.mem.writeInt(usize, &tmp, str.len, .little);
             try buffer.appendSlice(&tmp);
             try buffer.appendSlice(str);
@@ -114,11 +123,8 @@ fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), va
     }
 }
 
-pub fn serialize_rowid(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), id: muscle.RowId) ![]const u8 {
-    var tmp: [8]u8 = undefined; // wide enough to store u128
-    std.mem.writeInt(muscle.RowId, &tmp, id, .little);
-    try buffer.appendSlice(&tmp);
-    return buffer.constSlice();
+pub fn serialize_rowid(buffer: *[8]u8, id: muscle.RowId) !void {
+    std.mem.writeInt(muscle.RowId, buffer, id, .little);
 }
 
 //pub fn main() !void {

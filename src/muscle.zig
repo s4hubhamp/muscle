@@ -1,10 +1,10 @@
-pub const RowId = u64;
+pub const RowId = i64;
 
 pub const Table = struct {
     // btree root page
     root: u32,
     // incremental counter for internal row id
-    last_insert_rowid: RowId,
+    largest_rowid: RowId,
     // table name
     name: []const u8,
     columns: []const Column,
@@ -23,21 +23,9 @@ pub const Column = struct {
     auto_increment: bool = false,
     default: DefaultValue = DefaultValue{ .NULL = {} },
 };
-const DataTypeEnum = enum {
-    // i64
-    INT,
-    // f64
-    REAL,
-    // bool
-    BOOL,
-    TEXT,
-    // binary
-    BIN,
-    NULL,
-};
-pub const DataType = union(DataTypeEnum) { INT, REAL, BOOL, TEXT: usize, BIN: usize, NULL };
 
-pub const Value = union(DataTypeEnum) {
+pub const DataType = union(enum) { INT, REAL, BOOL, TEXT: usize, BIN: usize };
+pub const Value = union(enum) {
     INT: i64,
     REAL: f64,
     BOOL: bool,
