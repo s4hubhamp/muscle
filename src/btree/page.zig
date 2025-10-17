@@ -483,8 +483,12 @@ pub const Cell = struct {
             .little,
         );
 
-        // @Todo we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
-        return Cell{ .size = cell_size, .left_child = left_child, .content = slice[HEADER_SIZE..][0 .. cell_size - HEADER_SIZE] };
+        // @Todo @Perf we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
+        return Cell{
+            .size = cell_size,
+            .left_child = left_child,
+            .content = slice[HEADER_SIZE..][0 .. cell_size - HEADER_SIZE],
+        };
     }
 
     pub fn get_keys_slice(
