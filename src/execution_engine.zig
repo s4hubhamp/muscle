@@ -36,7 +36,7 @@ pub const ExecutionEngine = struct {
         var results: ?ExecuteQueryResults = null;
         var is_update_query = false;
         // for update queries, they can fail after updating some records
-        var rollback_partially_done_updates = false;
+        const rollback_partially_done_updates = false;
         var client_err: ?anyerror = null;
 
         //
@@ -57,17 +57,15 @@ pub const ExecutionEngine = struct {
         switch (query) {
             Query.CreateTable => |payload| {
                 is_update_query = true;
-                self.create_table(&metadata_page, tables, payload) catch |err| {
-                    client_err = err;
-                    rollback_partially_done_updates = true;
-                };
+                try self.create_table(&metadata_page, tables, payload);
+                //catch |err| {
+                //    client_err = err;
+                //    rollback_partially_done_updates = true;
+                //};
             },
             Query.DropTable => |payload| {
                 is_update_query = true;
-                self.drop_table(&metadata_page, tables, payload) catch |err| {
-                    client_err = err;
-                    rollback_partially_done_updates = true;
-                };
+                try self.drop_table(&metadata_page, tables, payload);
             },
             Query.Insert => |payload| {
                 is_update_query = true;
@@ -77,29 +75,41 @@ pub const ExecutionEngine = struct {
                 //    rollback_partially_done_updates = true;
                 //};
             },
+            Query.Update => |payload| {
+                is_update_query = true;
+                try self.update(&metadata_page, tables, payload);
+                //catch |err| {
+                //    client_err = err;
+                //    rollback_partially_done_updates = true;
+                //};
+            },
             Query.Delete => |payload| {
                 is_update_query = true;
-                self.delete(&metadata_page, tables, payload) catch |err| {
-                    client_err = err;
-                    rollback_partially_done_updates = true;
-                };
+                try self.delete(&metadata_page, tables, payload);
+                //catch |err| {
+                //    client_err = err;
+                //    rollback_partially_done_updates = true;
+                //};
             },
             Query.Select => |payload| {
-                self.select(&metadata_page, tables, payload) catch |err| {
-                    client_err = err;
-                };
+                try self.select(&metadata_page, tables, payload);
+                //catch |err| {
+                //    client_err = err;
+                //};
             },
             Query.SelectTableMetadata => |payload| {
-                results = self.select_table_metadata(&metadata_page, tables, payload) catch |err| {
-                    client_err = err;
-                    return null;
-                };
+                results = try self.select_table_metadata(&metadata_page, tables, payload);
+                //results = self.select_table_metadata(&metadata_page, tables, payload) catch |err| {
+                //    client_err = err;
+                //    return null;
+                //};
             },
             Query.SelectDatabaseMetadata => {
-                results = self.select_database_metadata(&metadata_page) catch |err| {
-                    client_err = err;
-                    return null;
-                };
+                results = try self.select_database_metadata(&metadata_page);
+                //results = self.select_database_metadata(&metadata_page) catch |err| {
+                //    client_err = err;
+                //    return null;
+                //};
             },
             else => @panic("not implemented"),
         }
@@ -130,35 +140,95 @@ pub const ExecutionEngine = struct {
         tables: []muscle.Table,
         payload: CreateTablePayload,
     ) !void {
-        const table_name = payload.table_name;
-        const columns = payload.columns;
-
-        var tables_list = std.ArrayList(muscle.Table).init(self.allocator);
+        var tables_list = try std.ArrayList(muscle.Table).initCapacity(self.allocator, tables.len + 1);
+        var columns = try std.ArrayList(muscle.Column).initCapacity(self.allocator, payload.columns.len + 1);
         defer {
             tables_list.deinit();
+            columns.deinit();
         }
 
         for (tables) |table| {
-            if (std.mem.eql(u8, table.name, table_name)) {
+            if (std.mem.eql(u8, table.name, payload.table_name)) {
                 return error.DuplicateTableName;
             }
         }
 
         try tables_list.appendSlice(tables);
 
+        // check for duplicate column names
+        for (payload.columns[0 .. payload.columns.len - 1], 0..) |*col, i| {
+            for (payload.columns[i + 1 ..]) |*col2| {
+                if (std.mem.eql(u8, col.name, col2.name)) return error.DuplicateColumnName;
+            }
+        }
+
+        for (payload.columns, 0..) |*c, i| {
+            var column = c.*;
+
+            if (column.auto_increment and column.data_type != .INT) {
+                return error.AutoIncrementColumnMustBeInteger;
+            }
+
+            if (i == payload.primary_key_column_index) {
+                switch (column.data_type) {
+                    // bools can't be primary key
+                    .BOOL => return error.BadPrimaryKeyType,
+                    // for text and binaries we have a limit on length
+                    .TEXT, .BIN => |len| {
+                        // for text we store len as first param
+                        if (len > page.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(usize)) {
+                            return error.PrimaryKeyMaxLengthExceeded;
+                        }
+                    },
+                    else => {},
+                }
+
+                // primary key should always be unique
+                column.unique = true;
+                column.not_null = true;
+
+                // if data_type is integer then it's basically alias to default primary key so we will enable all the defaults
+                if (column.data_type == .INT) {
+                    column.auto_increment = true;
+                    column.max_int_value = 0;
+                }
+
+                // primary key column gets stored at beginning
+                try columns.insert(0, column);
+            } else {
+                // @Perf Can we reorder columns for efficient operations?
+                try columns.append(column);
+            }
+        }
+
+        // create a default primary key column if not provided
+        if (payload.primary_key_column_index == null) {
+            const DEFAULT_PRIMARY_KEY_COLUMN_NAME = "Row_Id";
+            const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .INT;
+            try columns.insert(0, muscle.Column{
+                .name = DEFAULT_PRIMARY_KEY_COLUMN_NAME,
+                .data_type = DEFAULT_PRIMARY_KEY_COLUMN_TYPE,
+                .auto_increment = true,
+                .not_null = true,
+                .unique = true,
+                .max_int_value = 0,
+            });
+        }
+
         const root_page_number = try self.pager.alloc_free_page(metadata);
         // initialize root page
         const root_page = page.Page.init();
         try self.pager.update_page(root_page_number, &root_page);
 
-        // append a new table entry
-        try tables_list.append(muscle.Table{
+        const table = muscle.Table{
             .root = root_page_number,
-            .largest_rowid = 0, // row id will start from 1
-            .name = table_name,
-            .columns = columns,
+            .name = payload.table_name,
+            .columns = columns.items,
             .indexes = &[0]muscle.Index{},
-        });
+        };
+
+        // append a new table entry
+        try tables_list.append(table);
 
         // update tables
         try metadata.set_tables(self.allocator, tables_list.items[0..]);
@@ -178,18 +248,12 @@ pub const ExecutionEngine = struct {
         _ = payload;
     }
 
-    // TODO
-    // const CompareFn = fn (key: []u8, val: []u8) union(enum) { equal, greater, less };
-
     fn insert(
         self: *ExecutionEngine,
         metadata_page: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: InsertPayload,
     ) !void {
-        // 1. find the root page number
-        // 2. call the btree to insert
-
         var table: ?*muscle.Table = null;
         for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -201,49 +265,145 @@ pub const ExecutionEngine = struct {
             return error.TableNotFound;
         }
 
-        // the validation against schema should happen here.
-        //
-        // the validation for uniqueness will happen inside btree.
-        // Let's take two scenarios.
-        // 1. Single column index (unique and non unique)
-        // 2. Multi column index  (unique and non unique)
-        //
-        // Let's say we have an unique index on `colum 1` then it means that our index_col_1
-        // should not allow duplicate value for column 1.
-        // I think we have to first scan the index to check if key already exists.
-        // If it does not exist then only we will call btree.insert on a table.
-        //
-        // for now we don't have any indexes, so we will not do any validation.
-        //
+        const find_value = struct {
+            fn f(
+                column_name: []const u8,
+                values: []const InsertPayload.Value,
+            ) ?*const InsertPayload.Value {
+                for (values) |*val| {
+                    if (std.mem.eql(u8, val.column_name, column_name)) return val;
+                }
+
+                return null;
+            }
+        }.f;
+
+        const find_column = struct {
+            fn f(
+                columns: []const muscle.Column,
+                column_name: []const u8,
+            ) bool {
+                for (columns) |*col| {
+                    if (std.mem.eql(u8, col.name, column_name)) return true;
+                }
+
+                return false;
+            }
+        }.f;
+
+        // check for duplicate columns and whether columns even exists
+        if (payload.values.len > 1) {
+            for (payload.values, 0..) |*v1, i| {
+                if (!find_column(table.?.columns, v1.column_name))
+                    return error.ColumnDoesNotExist;
+                for (payload.values[i + 1 ..]) |*v2| {
+                    if (std.mem.eql(u8, v1.column_name, v2.column_name))
+                        return error.DuplicateColumns;
+                }
+            }
+        }
 
         // If the passed payload size is greater than max content that a single page can hold
         // this will overflow.
         // so the max size of a single row for now is equal to `page.Page.CONTENT_MAX_SIZE`
-        // This is important because our btree.balance function operates on only one overflow cell as
-        // argument.
         var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
+        var primary_key_bytes: []const u8 = undefined;
+        var primary_key_type: muscle.DataType = undefined;
 
-        // serialize row
-        const cell_and_rowid = try serde.serialize_row(&buffer, table.?, table.?.largest_rowid, payload);
+        // for each column find value
+        for (table.?.columns, 0..) |*column, i| {
+            const value = find_value(column.name, payload.values);
+            var final_value_to_serialize: muscle.Value = .{ .NULL = {} };
+
+            // if value is not provided or it's provided and null
+            if (value == null or value.?.value == .NULL) {
+                if (column.auto_increment) {
+                    // increment value and serialize
+                    column.max_int_value += 1;
+                    final_value_to_serialize = muscle.Value{ .INT = column.max_int_value };
+                } else if (column.not_null) {
+                    return error.MissingValue;
+                } else {
+                    // use default value on column definition and serialize
+                    // @Todo
+                    unreachable;
+                }
+            } else {
+                final_value_to_serialize = value.?.value;
+
+                if (column.auto_increment) {
+                    // here we have auto_increment but we are still getting value
+                    // need to adjust max value if current value is bigger
+                    if (column.max_int_value < final_value_to_serialize.INT) {
+                        column.max_int_value = final_value_to_serialize.INT;
+                    }
+                }
+
+                // validate the type of value
+                switch (column.data_type) {
+                    .INT => if (final_value_to_serialize != .INT and final_value_to_serialize != .NULL)
+                        return error.TypeMismatch,
+                    .REAL => if (final_value_to_serialize != .REAL and final_value_to_serialize != .NULL)
+                        return error.TypeMismatch,
+                    .BOOL => if (final_value_to_serialize != .BOOL and final_value_to_serialize != .NULL)
+                        return error.TypeMismatch,
+                    .TEXT => |len| switch (final_value_to_serialize) {
+                        .TEXT => |text| {
+                            if (text.len > len) return error.TextTooLong;
+                        },
+                        .NULL => {},
+                        else => return error.TypeMismatch,
+                    },
+                    .BIN => |len| switch (final_value_to_serialize) {
+                        .BIN => |bin| {
+                            if (bin.len > len) return error.BinaryTooLarge;
+                        },
+                        .NULL => {},
+                        else => return error.TypeMismatch,
+                    },
+                }
+            }
+
+            serde.serailize_value(&buffer, final_value_to_serialize) catch {
+                return error.RowTooBig;
+            };
+
+            // first column is always the primary key
+            if (i == 0) {
+                primary_key_bytes = buffer.constSlice();
+                primary_key_type = column.data_type;
+                if (primary_key_bytes.len > page.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
+                    return error.KeyTooLong;
+                }
+            }
+        }
+
         // Important to initiate BTree everytime OR have correct reference to metadata_page every time
-        var btree = BTree.init(&self.pager, metadata_page, self.allocator);
-        try btree.insert(
-            table.?.root,
-            cell_and_rowid.cell,
+        var btree = BTree.init(
+            &self.pager,
+            metadata_page,
+            primary_key_type,
+            self.allocator,
         );
+        try btree.insert(table.?.root, primary_key_bytes, buffer.constSlice());
 
         // update metadata
-        // when user provides smaller rowid's we will not to update largest rowid
-        if (cell_and_rowid.rowid > table.?.largest_rowid) {
-            table.?.largest_rowid = cell_and_rowid.rowid;
-        }
         try metadata_page.set_tables(self.allocator, tables);
         try self.pager.update_page(0, metadata_page);
-        // nocheckin
-        //print(
-        //    "first_free_page: {any} free_pages: {any} total_pages: {any}\n",
-        //    .{ metadata_page.first_free_page, metadata_page.free_pages, metadata_page.total_pages },
-        //);
+    }
+
+    fn update(
+        self: *ExecutionEngine,
+        metadata_page: *page.DBMetadataPage,
+        tables: []muscle.Table,
+        payload: UpdatePayload,
+    ) !void {
+        _ = self;
+        _ = metadata_page;
+        _ = tables;
+        _ = payload;
+
+        unreachable;
     }
 
     fn delete(
@@ -252,9 +412,6 @@ pub const ExecutionEngine = struct {
         tables: []muscle.Table,
         payload: DeletePayload,
     ) !void {
-        // 1. find the root page number
-        // 2. call the btree to insert
-
         var table: ?*muscle.Table = null;
         for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -266,15 +423,22 @@ pub const ExecutionEngine = struct {
             return error.TableNotFound;
         }
 
-        // for now we only support deleting via rowID.
-        assert(payload.key.len == 8);
+        if (@intFromEnum(table.?.columns[0].data_type) != @intFromEnum(payload.key)) {
+            return error.TypeMismatch;
+        }
+
+        // primary key has size limit
+        var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
+        try serde.serailize_value(&buffer, payload.key);
 
         // Important to initiate BTree everytime OR have correct reference to metadata_page every time
-        var btree = BTree.init(&self.pager, metadata_page, self.allocator);
-        try btree.delete(
-            table.?.root,
-            payload.key,
+        var btree = BTree.init(
+            &self.pager,
+            metadata_page,
+            table.?.columns[0].data_type,
+            self.allocator,
         );
+        try btree.delete(table.?.root, buffer.constSlice());
 
         // update metadata
         try self.pager.update_page(0, metadata_page);
@@ -286,7 +450,6 @@ pub const ExecutionEngine = struct {
         tables: []muscle.Table,
         payload: SelectPayload,
     ) !void {
-        std.debug.print("\n\n*****************************************************************\n", .{});
         var table: ?muscle.Table = null;
         for (tables) |t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -309,6 +472,8 @@ pub const ExecutionEngine = struct {
             curr_page = try self.pager.get_page(page.Page, curr_page_number);
         }
 
+        std.debug.print("\n\n*****************************************************************\n", .{});
+
         // traverse using .right pointers and print rows
         while (true) {
             std.debug.print("------------------\npage_number: {}, content_size: {}, free_space: {}, num_slots={}, right_child={}, left={}, right={}\n", .{
@@ -325,25 +490,21 @@ pub const ExecutionEngine = struct {
 
             for (0..curr_page.num_slots) |slot_index| {
                 const cell = curr_page.cell_at_slot(@intCast(slot_index));
-                print(" serial={}  id={d}", .{
-                    serial,
-                    std.mem.readInt(muscle.RowId, cell.get_keys_slice(false)[0..@sizeOf(usize)], .little),
-                });
+                print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page.Page.SlotArrayEntry) });
                 serial += 1;
 
-                var offset: usize = 8; // first 8 bytes are occupied by rowID
+                var offset: usize = 0;
                 for (table.?.columns) |column| {
-                    // null value
-                    if (cell.content[offset] == 0) {
-                        print("  {s}={any}", .{ column.name, "NULL" });
-                        continue;
-                    }
-
                     switch (column.data_type) {
                         .BIN, .TEXT => {
                             const len = std.mem.readInt(usize, cell.content[offset..][0..@sizeOf(usize)], .little);
                             offset += @sizeOf(usize);
-                            print("  {s}={s}", .{ column.name, cell.content[offset..][0..len] });
+                            if (len > 10) {
+                                print("  {s}={s}...({d})", .{ column.name, cell.content[offset..][0..10], len });
+                            } else {
+                                print("  {s}={s}", .{ column.name, cell.content[offset..][0..len] });
+                            }
+
                             offset += len;
                         },
                         .INT => {
@@ -407,21 +568,30 @@ pub const ExecutionEngine = struct {
 
         var result = SelectTableMetadataQueryResult{
             .root_page = table.?.root,
-            .largest_rowid = table.?.largest_rowid,
             .btree_height = 0,
             .btree_leaf_cells = 0,
             .btree_internal_cells = 0,
             .btree_leaf_pages = 0,
             .btree_internal_pages = 0,
+            .table_columns = try std.ArrayList(muscle.Column).initCapacity(self.allocator, table.?.columns.len),
             .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataQueryResult.DBPageMetadata).init(self.allocator),
         };
 
+        // copy columns
+        try result.table_columns.appendSlice(table.?.columns);
+
+        const primary_key_data_type = table.?.columns[0].data_type;
         var first_page_in_level: ?muscle.PageNumber = table.?.root;
         var curr_page_number: muscle.PageNumber = undefined;
         var curr_page: page.Page = undefined;
 
         const collect_page_info = struct {
-            fn f(map: *std.AutoHashMap(muscle.PageNumber, SelectTableMetadataQueryResult.DBPageMetadata), _page_number: muscle.PageNumber, _page: page.Page) !void {
+            fn f(
+                map: *std.AutoHashMap(muscle.PageNumber, SelectTableMetadataQueryResult.DBPageMetadata),
+                _page_number: muscle.PageNumber,
+                _page: page.Page,
+                _primary_key_data_type: muscle.DataType,
+            ) !void {
                 var page_info = SelectTableMetadataQueryResult.DBPageMetadata{
                     .page = _page_number,
                     .right_child = _page.right_child,
@@ -436,7 +606,10 @@ pub const ExecutionEngine = struct {
                     const cell = _page.cell_at_slot(@intCast(slot));
 
                     try page_info.cells.append(.{
-                        .key = try map.allocator.dupe(u8, cell.get_keys_slice(!_page.is_leaf())),
+                        .key = try map.allocator.dupe(u8, cell.get_keys_slice(
+                            !_page.is_leaf(),
+                            _primary_key_data_type,
+                        )),
                         .value = try map.allocator.dupe(u8, cell.content),
                         .size = cell.size,
                         .left_child = cell.left_child,
@@ -455,7 +628,7 @@ pub const ExecutionEngine = struct {
             first_page_in_level = if (!curr_page.is_leaf()) curr_page.child(0) else null;
 
             while (curr_page_number != 0) {
-                try collect_page_info(&result.pages, curr_page_number, curr_page);
+                try collect_page_info(&result.pages, curr_page_number, curr_page, primary_key_data_type);
 
                 if (curr_page.is_leaf()) {
                     result.btree_leaf_cells += curr_page.num_slots;
@@ -519,6 +692,7 @@ pub const ExecutionEngine = struct {
 const CreateTablePayload = struct {
     table_name: []const u8,
     columns: []const muscle.Column,
+    primary_key_column_index: ?usize = null,
 };
 
 const DropTablePayload = struct {
@@ -528,10 +702,15 @@ const DropTablePayload = struct {
 const DropIndexPayload = struct {};
 
 pub const InsertPayload = struct {
+    pub const Value = struct {
+        column_name: []const u8,
+        value: muscle.Value,
+    };
+
     table_name: []const u8,
-    columns: []const muscle.Column,
-    values: []const muscle.Value,
+    values: []const Value,
 };
+pub const UpdatePayload = InsertPayload;
 
 const SelectPayload = struct {
     table_name: []const u8,
@@ -541,9 +720,7 @@ const SelectPayload = struct {
 
 const DeletePayload = struct {
     table_name: []const u8,
-    key: []const u8,
-    // columns: []const muscle.Column,
-    // limit: usize
+    key: muscle.Value,
 };
 
 pub const Query = union(enum) {
@@ -551,6 +728,7 @@ pub const Query = union(enum) {
     DropTable: DropTablePayload,
     DropIndex: DropIndexPayload,
     Insert: InsertPayload,
+    Update: UpdatePayload,
     Select: SelectPayload,
     Delete: DeletePayload,
     SelectTableMetadata: SelectPayload,
@@ -566,7 +744,7 @@ pub const SelectDatabaseMetadataResult = struct {
 
 pub const SelectTableMetadataQueryResult = struct {
     root_page: muscle.PageNumber,
-    largest_rowid: muscle.RowId,
+    table_columns: std.ArrayList(muscle.Column),
     btree_height: u16,
 
     btree_leaf_cells: u32,
@@ -597,7 +775,6 @@ pub const SelectTableMetadataQueryResult = struct {
         std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%     Metadata    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
 
         std.debug.print("Root Page:             {}\n", .{self.root_page});
-        std.debug.print("Largest Rowid:         {}\n", .{self.largest_rowid});
         std.debug.print("Total Rows:            {}\n\n", .{self.btree_leaf_cells});
         std.debug.print("BTree Height:          {}\n", .{self.btree_height});
         std.debug.print("BTree Internal Pages:  {}\n", .{self.btree_internal_pages});
@@ -619,6 +796,24 @@ pub const SelectTableMetadataQueryResult = struct {
             _page.cells.deinit();
         }
 
+        self.table_columns.deinit();
         self.pages.deinit();
     }
 };
+
+//const ExecutionPlan = struct {
+//    steps: [32]ExecutionStep,
+//    n_steps: usize,
+//};
+
+//const ExecutionStep = union(enum) {
+//    .TABLE_SCAN: struct {
+//        .table_name: []const u8,
+//    },
+//    .INDEX_SCAN: struct {
+//        .index_name: []const u8,
+//    },
+//    .ASSERT_UNIQUE: struct {
+//        .index_name: []const u8,
+//    },
+//};

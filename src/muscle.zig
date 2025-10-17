@@ -3,13 +3,11 @@ pub const RowId = i64;
 pub const Table = struct {
     // btree root page
     root: u32,
-    // incremental counter for internal row id
-    largest_rowid: RowId,
     // table name
     name: []const u8,
-    columns: []const Column,
+    columns: []Column,
     // index is outside column because we may have compound indexes
-    indexes: []const Index,
+    indexes: []Index,
 };
 
 pub const Column = struct {
@@ -17,11 +15,12 @@ pub const Column = struct {
     data_type: DataType,
 
     // constraints
-    primary_key: bool = false,
     unique: bool = false,
     not_null: bool = false,
-    auto_increment: bool = false,
     default: DefaultValue = DefaultValue{ .NULL = {} },
+    auto_increment: bool = false,
+    // curr max value of int column used in auto_increment
+    max_int_value: i64 = 0,
 };
 
 pub const DataType = union(enum) { INT, REAL, BOOL, TEXT: usize, BIN: usize };
@@ -53,7 +52,7 @@ const DefaultValue = union(DefaultValueVariant) {
     LITERAL: Value,
 };
 pub const Index = struct {
-    // btree root page
+    // root page of the index btree
     root: u32,
     // index name
     name: []const u8,

@@ -1,8 +1,8 @@
 const std = @import("std");
 const muscle = @import("muscle");
 const serde = @import("../serialize_deserialize.zig");
+const btree = @import("./btree.zig");
 
-const print = std.debug.print;
 const assert = std.debug.assert;
 
 pub const DBMetadataPage = extern struct {
@@ -107,7 +107,7 @@ pub const Page = extern struct {
     // when we insert some key inside the parent or initially inside the leaf it can
     // overflow before we call balance on it. For that case we actually don't insert it
     // inside the Page content, instead we keep it inside overflow map.
-    // TODO I feel like this should not be part of the struct itself and can be kept inside pager OR
+    // @Todo I feel like this should not be part of the struct itself and can be kept inside pager OR
     // the btree balance algorithm function argument.
     //temp__overflow_map: std.hash_map.AutoHashMapUnmanaged(SlotIndex, []u8),
 
@@ -203,13 +203,12 @@ pub const Page = extern struct {
 
         // place the cell
         self.put_cell_at_offset(cell, self.last_used_offset);
-
         self.num_slots += 1;
         self.content_size += @sizeOf(SlotArrayEntry);
         self.content_size += @as(u16, @intCast(cell.size));
     }
 
-    // TODO check if we are using it or not
+    // @Todo check if we are using it or not
     pub fn remove(self: *Page, slot_index: SlotArrayIndex) void {
         assert(slot_index < self.num_slots);
 
@@ -253,7 +252,7 @@ pub const Page = extern struct {
             return error.Overflow;
         }
 
-        // @speed: to make life simple we are calling defragment. this feels non optimal.
+        // @Perf: to make life simple we are calling defragment. this feels non optimal.
         self.defragment(.{ .slot_index = slot_index, .old_size = old.size, .new_size = cell.size });
 
         // after degramentation, self.last_used_offset should point to the cell we are updating.
@@ -262,8 +261,6 @@ pub const Page = extern struct {
         self.put_cell_at_offset(cell, self.last_used_offset);
         self.content_size -= old.size;
         self.content_size += @as(u16, @intCast(cell.size));
-
-        //std.debug.print("After put_cell_at_offset: {any}", .{self});
     }
 
     // slot array stores offsets for cell headers
@@ -312,10 +309,7 @@ pub const Page = extern struct {
         found: SlotArrayIndex,
         go_down: SlotArrayIndex,
     };
-    pub fn search(
-        self: *const Page,
-        key: []const u8,
-    ) SearchResult {
+    pub fn search(self: *const Page, key_bytes: []const u8, key_type: muscle.DataType) SearchResult {
         if (self.num_slots == 0) {
             return SearchResult{
                 .go_down = 0,
@@ -329,21 +323,9 @@ pub const Page = extern struct {
         while (low <= high) {
             mid = @divFloor(low + high, 2);
             const cell = self.cell_at_slot(@intCast(mid));
+            const value_slice = cell.get_keys_slice(!self.is_leaf(), key_type);
 
-            // compare needs to know how each value is serialized
-            // for different types comparison will change
-            // for now we are always assuming and comparing rowIds
-            // we can't use std.mem.order because it compares lexicographically and hence yields incorrect
-            // results for little endian byte slices comparisons.
-            // we will deserialize and then compare.
-            // todo std.mem.order can be used to compare exact equality
-
-            const value_le_slice = cell.get_keys_slice(!self.is_leaf());
-            assert(value_le_slice.len == 8);
-            const deserialized_value = std.mem.readInt(muscle.RowId, @ptrCast(value_le_slice), .little);
-            const deserialized_key = std.mem.readInt(muscle.RowId, @ptrCast(key), .little);
-
-            const ordering = std.math.order(deserialized_key, deserialized_value);
+            const ordering = serde.compare_serialized_bytes(key_type, key_bytes, value_slice);
             switch (ordering) {
                 .eq => return SearchResult{ .found = @intCast(mid) },
                 .lt => {
@@ -372,11 +354,6 @@ pub const Page = extern struct {
         self: *Page,
         updating_cell_info: ?struct { slot_index: SlotArrayEntry, old_size: u16, new_size: u16 },
     ) void {
-        //std.debug.print("before defragmenting last_used_offset: {} updating_cell_info: {any}\n", .{
-        //    self.last_used_offset,
-        //    updating_cell_info,
-        //});
-
         const sizeof_slot_array = @sizeOf(SlotArrayEntry) * self.num_slots;
         const sizeof_cells = self.content_size - sizeof_slot_array;
 
@@ -428,34 +405,34 @@ pub const Page = extern struct {
         }
 
         self.content = updated_content;
-        //std.debug.print("after defragmenting last_used_offset: {}\n", .{self.last_used_offset});
     }
 };
 
-// TODO start using this limit
-// we need to limit size of divider key inside parent in a way so that we have space for atleast two internal cells
-pub const INTERNAL_CELL_SIZE_LIMIT = blk: {
-    break :blk Page.CONTENT_MAX_SIZE / 2 - @sizeOf(Page.SlotArrayEntry);
+// we need to limit size of divider key so we have space for atleast two internal cells
+pub const INTERNAL_CELL_CONTENT_SIZE_LIMIT = blk: { // 2031
+    break :blk Page.CONTENT_MAX_SIZE / 2 -
+        @sizeOf(Page.SlotArrayEntry) - // Cell offset inside slot array
+        Cell.HEADER_SIZE // Cell Header
+    ;
 };
 
 // Cell struct gives a view over the raw bytes stored inside the `Page.content`
 pub const Cell = struct {
     pub const HEADER_SIZE = 6;
-    // tatal size of cell. HEADER_SIZE + content size
+    // total size of cell. HEADER_SIZE + content size
     // this must be placed at first, see serialize() below.
     size: u16,
     //
+    // @Perf we can skip having left_child for leaf nodes
     left_child: muscle.PageNumber,
     //
-    // For leaf nodes cell content is key and value.
-    //  So, For main table cells, content is (RowId + Row).
-    //      For index cells, content is (RowId + Indexed field value).
-    // By always storing RowId first we get to actual mapped content by doing content[@sizeOf(RowId)..]
+    // On Main Table
+    //      For leaf node cells content is (key column value + other column values).
+    //      For internal node cells content is key.
     //
-    // For internal nodes all cell content is key only.
-    //  So, For main table cells, content will be RowId only.
-    //      For index cells, content will be Indexed field value.
-    // For internal nodes cell content is only the key. And it's simply equal to content size.
+    // On Index Table
+    //      For leaf node cells content is key + primary key
+    //      For internal  node cells content is key.
     //
     content: []const u8,
 
@@ -490,7 +467,7 @@ pub const Cell = struct {
         @memcpy(slice[6..slice.len], self.content);
     }
 
-    // TODO: rename to init_from_bytes
+    // @Todo: rename to init_from_bytes
     pub fn from_bytes(slice: []const u8) Cell {
         // read cell size
         const cell_size = std.mem.readInt(
@@ -505,7 +482,7 @@ pub const Cell = struct {
             .little,
         );
 
-        // TODO we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
+        // @Todo we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
         return Cell{ .size = cell_size, .left_child = left_child, .content = slice[6..][0 .. cell_size - 6] };
     }
 
@@ -513,21 +490,31 @@ pub const Cell = struct {
         self: *const Cell,
         // whether this cell belongs to internal page or leaf page
         is_internal_page_cell: bool,
-        // whether this cell is for index page or main table data page
-        // is_index_page_cell: bool,
+        key_data_type: muscle.DataType,
     ) []const u8 {
-        // for internal nodes all cell content is key for both data and index pages
+        var key_slice: []const u8 = undefined;
+
+        // for internal nodes all cell content is key
         if (is_internal_page_cell) {
-            return self.content;
+            key_slice = self.content;
+        } else {
+            switch (key_data_type) {
+                .INT, .REAL => {
+                    key_slice = self.content[0..@sizeOf(i64)];
+                },
+                .BIN, .TEXT => {
+                    const len = std.mem.readInt(usize, self.content[0..@sizeOf(usize)], .little);
+                    key_slice = self.content[0..(@sizeOf(usize) + len)];
+                },
+                .BOOL => {
+                    // we don't support bool as primary key
+                    unreachable;
+                },
+            }
         }
 
-        // for index page, key is indexed field value
-        // if (is_index_page_cell) {
-        //     return self.content[@sizeOf(muscle.RowId)..];
-        // }
-
-        // for data page(leaf nodes), key is rowId which gets stored at start
-        return self.content[0..@sizeOf(muscle.RowId)];
+        assert(key_slice.len <= INTERNAL_CELL_CONTENT_SIZE_LIMIT);
+        return key_slice;
     }
 };
 

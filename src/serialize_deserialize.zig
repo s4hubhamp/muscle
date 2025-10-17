@@ -28,65 +28,7 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
     return page_struct;
 }
 
-// Serialize the row and returns a Cell
-pub fn serialize_row(
-    buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE),
-    table: *const muscle.Table,
-    largest_rowid: muscle.RowId,
-    payload: InsertPayload,
-) !struct { cell: page.Cell, rowid: muscle.RowId } {
-    var rowid = largest_rowid + 1;
-    // If rowid is provided then use it Otherwise this insert will have current largest + 1.
-    for (payload.columns, payload.values) |c, v| {
-        if (std.mem.eql(u8, c.name, "rowid")) {
-            rowid = v.INT;
-        }
-    }
-
-    // serialize the row id
-    try buffer.resize(8);
-    try serialize_rowid(buffer.buffer[0..8], rowid);
-
-    // serialize the payload
-    for (table.columns) |column| {
-        if (std.mem.eql(u8, column.name, "rowid")) continue;
-
-        var found = false;
-        for (payload.columns, 0..) |col, i| {
-            if (std.mem.eql(u8, column.name, col.name)) {
-                found = true;
-
-                // TODO we are not validating against data type. where do we check if the
-                // data type on column definition is correct.
-                // TODO we are also not validating to check if the text length is less than
-                // equal to set length on Text like columns (TEXT, BIN)
-
-                // serialize and add the value to buffer
-                try serailize_value(buffer, payload.values[i]);
-            }
-        }
-
-        // if the value is not provided in payload
-        // we will try to use default value
-        if (!found) {
-            switch (column.default) {
-                .NULL => {
-                    const default_null_value = muscle.Value{ .NULL = {} };
-                    // if column has non null constraint then we can't set the value to null
-                    if (column.not_null) return error.ValueNotProvided;
-                    try serailize_value(buffer, default_null_value);
-                },
-                else => {
-                    unreachable;
-                },
-            }
-        }
-    }
-
-    return .{ .cell = page.Cell.init(buffer.constSlice(), null), .rowid = rowid };
-}
-
-fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
+pub fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
     switch (val) {
         .BIN => |blob| {
             // len will take usize bytes
@@ -96,13 +38,11 @@ fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), va
             try buffer.appendSlice(blob);
         },
         .INT => |i| {
-            // Int is i64 so 8 bytes
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(i64, &tmp, i, .little);
             try buffer.appendSlice(&tmp);
         },
         .REAL => |i| {
-            // Int is f64 so 8 bytes
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(i64, &tmp, @as(i64, @bitCast(i)), .little);
             try buffer.appendSlice(&tmp);
@@ -118,101 +58,72 @@ fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), va
             try buffer.appendSlice(str);
         },
         .NULL => {
-            try buffer.append(0);
+            // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example
+            unreachable;
         },
     }
 }
 
+// @Todo we don't use this right now!
+pub fn deserialize_value(buffer: []const u8, data_type: muscle.DataType) muscle.Value {
+    switch (data_type) {
+        .INT => {
+            // we don't have variable sized integers yet
+            assert(buffer.len >= @sizeOf(i64));
+            return .{ .INT = std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little) };
+        },
+        .REAL => {
+            // we don't have variable sized floats yet
+            assert(buffer.len >= @sizeOf(f64));
+            return .{ .INT = @as(f64, @bitCast(std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little))) };
+        },
+        // strings and blobs are compared lexicographically
+        .TEXT => {
+            const len = std.mem.readInt(usize, buffer[0..@sizeOf(usize)], .little);
+            return .{ .TEXT = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
+        },
+        .BIN => {
+            const len = std.mem.readInt(usize, buffer[0..@sizeOf(usize)], .little);
+            return .{ .BIN = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
+        },
+        else => {
+            // we don't support booleans as primary keys right now
+            unreachable;
+        },
+    }
+}
+
+// @Todo remove this
 pub fn serialize_rowid(buffer: *[8]u8, id: muscle.RowId) !void {
     std.mem.writeInt(muscle.RowId, buffer, id, .little);
 }
 
-//pub fn main() !void {
-//    //var buffer = [_]u8{0} ** 100;
-//    //var stream = std.io.fixedBufferStream(&buffer);
-//    //var writer = stream.writer();
-
-//    const S = extern struct {
-//        a: u16,
-//        b: u16,
-//        c: u32,
-//        d: [5]u8,
-//    };
-
-//    const s = S{ .a = 256, .b = 257, .c = 258, .d = .{ 1, 2, 3, 4, 5 } };
-
-//    var serialized = try serialize_page(s);
-//    std.debug.print("serialized: {X}\n", .{serialized});
-
-//    const deserialized = try deserialize_page(S, &serialized);
-//    std.debug.print("deserialized: {any}\n", .{deserialized});
-
-//    //try writer.writeStruct(s);
-//    //try writer.writeStructEndian(s, .big);
-
-//}
-
-//fn serializeAndDeserialize(comptime T: type, value: T, buffer: []u8) !T {
-//    const writer = std.io.fixedBufferStream(buffer).writer();
-//    const reader = std.io.fixedBufferStream(buffer).reader();
-
-//    // Serialize the struct
-//    try serializeStruct(T, value, writer);
-
-//    // Rewind the buffer to the start for deserialization
-//    try std.io.fixedBufferStream(buffer).seekTo(0);
-
-//    // Deserialize the struct back into the value
-//    return try deserializeStruct(T, reader);
-//}
-
-//fn serializeStruct(comptime T: type, value: T, writer: anytype) !void {
-//    const info = @typeInfo(T);
-//    switch (info) {
-//        .Struct => |s| {
-//            inline for (s.fields) |field| {
-//                const field_value = @field(value, field.name);
-//                try serializeField(field_value, writer);
-//            }
-//        },
-//        else => @compileError("Expected a struct"),
-//    }
-//}
-
-//fn serializeField(value: anytype, writer: anytype) !void {
-//    switch (@TypeOf(value)) {
-//        u8 => try writer.writeByte(value),
-//        u16 => try writer.writeIntLittle(u16, value),
-//        u32 => try writer.writeIntLittle(u32, value),
-//        u64 => try writer.writeIntLittle(u64, value),
-//        else => @compileError("Unsupported field type"),
-//    }
-//}
-
-//fn deserializeStruct(comptime T: type, reader: anytype) !T {
-//    var result: T = undefined;
-//    const info = @typeInfo(T);
-
-//    switch (info) {
-//        .Struct => |s| {
-//            inline for (s.fields) |field| {
-//                const FieldType = field.field_type;
-//                const value = try deserializeField(FieldType, reader);
-//                @field(result, field.name) = value;
-//            }
-//        },
-//        else => @compileError("Expected a struct"),
-//    }
-
-//    return result;
-//}
-
-//fn deserializeField(comptime T: type, reader: anytype) !T {
-//    return switch (T) {
-//        u8 => try reader.readByte(),
-//        u16 => try reader.readIntLittle(u16),
-//        u32 => try reader.readIntLittle(u32),
-//        u64 => try reader.readIntLittle(u64),
-//        else => @compileError("Unsupported field type for deserialization"),
-//    };
-//}
+pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []const u8) std.math.Order {
+    switch (data_type) {
+        .INT => {
+            // we don't have variable sized integers yet
+            assert(a.len == @sizeOf(i64));
+            assert(a.len == b.len);
+            const _a = std.mem.readInt(i64, @ptrCast(a), .little);
+            const _b = std.mem.readInt(i64, @ptrCast(b), .little);
+            return std.math.order(_a, _b);
+        },
+        .REAL => {
+            // we don't have variable sized floats yet
+            assert(a.len == @sizeOf(f64));
+            assert(a.len == b.len);
+            const _a = @as(f64, @bitCast(std.mem.readInt(i64, @ptrCast(a), .little)));
+            const _b = @as(f64, @bitCast(std.mem.readInt(i64, @ptrCast(b), .little)));
+            return std.math.order(_a, _b);
+        },
+        // strings and blobs are compared lexicographically
+        .TEXT, .BIN => {
+            // first 8 btyes is length and later we have actual text data
+            return std.mem.order(u8, a[@sizeOf(usize)..], b[@sizeOf(usize)..]);
+        },
+        else => {
+            // we don't support booleans as primary keys right now
+            unreachable;
+        },
+    }
+}

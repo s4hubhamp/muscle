@@ -127,7 +127,7 @@ pub const Pager = struct {
         var n_reverted: u32 = 0;
         var offset: u32 = 0;
         while (true) {
-            // TODO sequential io // ran into simd error when trying earlier
+            // @Todo sequential io // ran into simd error when trying earlier
             // https://chatgpt.com/share/67f2613a-19e0-8000-b8a8-af6aa0fa5725
             var results = try self.journal.batch_get_original_pages(offset);
             if (results.n_read == 0) break;
@@ -205,7 +205,7 @@ pub const Pager = struct {
 
     pub fn get_page(self: *Pager, comptime T: type, page_number: u32) !T {
         // deserialize the page inside the cache and return it.
-        // @speed: This returns a Copy
+        // @Perf: This returns a Copy
         const page_struct = serde.deserialize_page(T, try self.get_page_bytes_from_cache_or_disk(page_number));
         return page_struct;
     }
