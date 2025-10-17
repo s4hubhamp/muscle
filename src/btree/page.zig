@@ -470,6 +470,7 @@ pub const Cell = struct {
     // @Todo: rename to init_from_bytes
     pub fn from_bytes(slice: []const u8) Cell {
         // read cell size
+        // @Todo If size is total size then why we are calculating it again? It'll be equal to slice.len?
         const cell_size = std.mem.readInt(
             u16,
             slice[0..@sizeOf(u16)],
@@ -483,7 +484,7 @@ pub const Cell = struct {
         );
 
         // @Todo we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
-        return Cell{ .size = cell_size, .left_child = left_child, .content = slice[6..][0 .. cell_size - 6] };
+        return Cell{ .size = cell_size, .left_child = left_child, .content = slice[HEADER_SIZE..][0 .. cell_size - HEADER_SIZE] };
     }
 
     pub fn get_keys_slice(
