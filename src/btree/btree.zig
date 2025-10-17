@@ -309,7 +309,10 @@ pub const BTree = struct {
 
                     try self.pager.update_page(child_page_number, child);
                 } else {
-                    const space_needed = try self.get_needed_space(&child, &leaf_operation_or_prev_change_info.CHANGE_INFO);
+                    const space_needed = try self.get_needed_space(
+                        &child,
+                        &leaf_operation_or_prev_change_info.CHANGE_INFO,
+                    );
 
                     // if we can fit everything
                     if (space_needed <= page.Page.CONTENT_MAX_SIZE) {
@@ -373,7 +376,12 @@ pub const BTree = struct {
                         next_change_info = BTreeChangeInfo{
                             .distribution_info = try DistributionInfo.init(0),
                         };
-                        try next_change_info.?.distribution_info.append(.{ .sibling_page_number = 0, .sibling_slot_index = child_index_inside_parent.? });
+                        try next_change_info.?.distribution_info.append(
+                            .{
+                                .sibling_page_number = 0,
+                                .sibling_slot_index = child_index_inside_parent.?,
+                            },
+                        );
                         try self.free_page(child_page_number);
                         save = false;
                     }
@@ -403,15 +411,28 @@ pub const BTree = struct {
                     child.remove(firstElement.sibling_slot_index);
                 }
 
+                //  We are intetionally saving here because when we load siblings below we will need updated child
+                try self.pager.update_page(child_page_number, child);
+
                 if (child.num_slots == 0) {
-                    // @Todo
-                    // here we need to rebalance siblings or try to bring parent key down?
-                    unreachable;
-                } else {
-                    try self.pager.update_page(child_page_number, child);
+                    //std.debug.print("child_page_number: {}\n", .{child_page_number});
+                    //std.debug.print("distribution info: {any}\n", .{
+                    //    leaf_operation_or_prev_change_info.CHANGE_INFO.distribution_info,
+                    //});
+
+                    var siblings = try Siblings.init(0);
+                    try self.load_siblings(parent_page_number.?, child_index_inside_parent.?, &siblings);
+
+                    next_change_info = try self.distribute_internal_node(
+                        &siblings,
+                        &leaf_operation_or_prev_change_info.CHANGE_INFO,
+                    );
                 }
             } else {
-                const space_needed = try self.get_needed_space(&child, &leaf_operation_or_prev_change_info.CHANGE_INFO);
+                const space_needed = try self.get_needed_space(
+                    &child,
+                    &leaf_operation_or_prev_change_info.CHANGE_INFO,
+                );
 
                 if (space_needed <= page.Page.CONTENT_MAX_SIZE) {
                     try self.update_internal_node_with_change_info(
@@ -558,9 +579,14 @@ pub const BTree = struct {
         // Below for loop just calculates the space needed
         for (change_info.distribution_info.constSlice()) |info| {
             if (info.sibling_page_number == 0) {
-                // @Todo
-                // some siblings may have updated and some may have freed, this case is not handled yet
-                unreachable;
+                // key is no longer needed
+                // if freed sib is right child then we never had it's cell
+                if (info.sibling_slot_index < curr_state.num_slots) {
+                    space_needed -= curr_state.cell_at_slot(info.sibling_slot_index).size;
+                    space_needed -= @sizeOf(page.Page.SlotArrayEntry);
+                }
+
+                continue;
             }
 
             // if the sibling is right_child then we don't have it's divider cell
@@ -869,7 +895,6 @@ pub const BTree = struct {
         }
     }
 
-    // @Todo can we merge with split_internal_node
     fn distribute_internal_node(
         self: *BTree,
         siblings: *Siblings,
@@ -945,10 +970,17 @@ pub const BTree = struct {
             while (curr < raw_cells.items.len) {
                 var attach_right_child_and_move_to_next_sibling = false;
 
-                // if we have only three cells left and we can't fit all inside current sibling then we will need to
-                // use one for right_child, and other two for next sibling
+                // if we have only have three cells left and we can't fit all inside current sibling
+                // then we will need to use one for right_child, and other two for next sibling
                 if (raw_cells.items.len - curr == 3) {
-                    attach_right_child_and_move_to_next_sibling = true;
+                    // need to check if we can fit two in this node itself
+                    var needed_space: usize = 0;
+                    needed_space += page.Cell.from_bytes(raw_cells.items[0]).size;
+                    needed_space += page.Cell.from_bytes(raw_cells.items[1]).size;
+
+                    if (needed_space > sib.page.free_space()) {
+                        attach_right_child_and_move_to_next_sibling = true;
+                    }
                 }
 
                 // attach last one as right_child
