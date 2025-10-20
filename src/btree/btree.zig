@@ -215,7 +215,6 @@ pub const BTree = struct {
         path: *std.ArrayList(PathDetail),
         modification_request: union(enum) {
             LEAF_OPERATION: LeafOperation,
-            // @Todo
             PROPAGATED_CHANGES: TreeChangeInfo,
         },
     ) !void {
@@ -283,7 +282,6 @@ pub const BTree = struct {
             return;
         }
 
-        // @Todo
         var next_change_info: ?TreeChangeInfo = null;
 
         if (is_leaf) {
@@ -297,7 +295,7 @@ pub const BTree = struct {
                         try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
                         // distribute
-                        next_change_info = try self.modify_leaf(&siblings, true, data.cell, target_page_number, data.insert_at_slot);
+                        next_change_info = try self.modify_leaf_node(&siblings, true, data.cell, target_page_number, data.insert_at_slot);
                     };
                 },
 
@@ -309,7 +307,7 @@ pub const BTree = struct {
                         try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
                         // distribute
-                        next_change_info = try self.modify_leaf(&siblings, false, data.cell, target_page_number, data.update_at_slot);
+                        next_change_info = try self.modify_leaf_node(&siblings, false, data.cell, target_page_number, data.update_at_slot);
                     };
                 },
 
@@ -319,7 +317,6 @@ pub const BTree = struct {
                     // need to check if the child becomes empty after deleting an key
                     // if it does then we will need to free this page and balance the tree
                     if (target_page.num_slots == 0) {
-                        // @Todo
                         next_change_info = TreeChangeInfo{
                             .sibling_updates = try SiblingUpdateInfo.init(0),
                         };
@@ -348,7 +345,7 @@ pub const BTree = struct {
                 var siblings = try LoadedSiblings.init(0);
                 try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
-                next_change_info = try self.modify_internal(
+                next_change_info = try self.modify_internal_node(
                     &siblings,
                     target_page_number,
                     &modification_request.PROPAGATED_CHANGES,
@@ -440,7 +437,6 @@ pub const BTree = struct {
     fn update_internal_node_with_change_info(
         self: *BTree,
         node: *page.Page,
-        // @Todo
         change_info: *const TreeChangeInfo,
     ) !void {
         for (change_info.sibling_updates.constSlice()) |info| {
@@ -554,7 +550,7 @@ pub const BTree = struct {
         return space_needed;
     }
 
-    fn modify_leaf(
+    fn modify_leaf_node(
         self: *BTree,
         siblings: *LoadedSiblings,
         is_new_cell: bool,
@@ -704,7 +700,10 @@ pub const BTree = struct {
         root_page_number: muscle.PageNumber,
         change_info: TreeChangeInfo,
     ) !void {
-        var raw_cells = std.ArrayList([]u8).init(self.allocator);
+        var raw_cells = try std.ArrayList([]u8).initCapacity(
+            self.allocator,
+            root.num_slots + 1,
+        );
 
         defer {
             for (raw_cells.items) |slice| {
@@ -828,7 +827,7 @@ pub const BTree = struct {
         }
     }
 
-    fn modify_internal(
+    fn modify_internal_node(
         self: *BTree,
         siblings: *LoadedSiblings,
         // for which page number below change info is for
