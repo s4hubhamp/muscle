@@ -5,19 +5,21 @@ const page = @import("./page.zig");
 
 const assert = std.debug.assert;
 
-// Btree gets the root page and will do search, insert, delete operations
-// execution engine will provide the root page information to btree
-// that means execution engine needs to have access to file
+/// B-tree implementation for managing sorted data with search, insert, and delete operations.
+/// The execution engine provides the root page number, allowing the B-tree to navigate the page hierarchy.
+/// All operations maintain B-tree invariants through automatic balancing and splitting/merging of pages.
 pub const BTree = struct {
     metadata: *page.DBMetadataPage,
     allocator: std.mem.Allocator,
     pager: *Pager,
+    root_page_number: muscle.PageNumber,
     // data type of *key* used inside the btree
     primary_key_data_type: muscle.DataType,
 
     pub fn init(
         pager: *Pager,
         metadata: *page.DBMetadataPage,
+        root_page_number: muscle.PageNumber,
         primary_key_data_type: muscle.DataType,
         allocator: std.mem.Allocator,
     ) BTree {
@@ -25,6 +27,7 @@ pub const BTree = struct {
             .pager = pager,
             .metadata = metadata,
             .allocator = allocator,
+            .root_page_number = root_page_number,
             .primary_key_data_type = primary_key_data_type,
         };
     }
@@ -39,13 +42,9 @@ pub const BTree = struct {
         child_index: u16, // this is the index in `.children` array.
     };
 
-    pub fn search(
-        self: *BTree,
-        root: muscle.PageNumber,
-        key: []const u8,
-    ) !std.ArrayList(PathDetail) {
+    pub fn search(self: *const BTree, key: []const u8) !std.ArrayList(PathDetail) {
         var path = std.ArrayList(PathDetail).init(self.allocator);
-        var page_number = root;
+        var page_number = self.root_page_number;
         var node = try self.pager.get_page(page.Page, page_number);
 
         // while we don't reach to leaf node
@@ -63,7 +62,7 @@ pub const BTree = struct {
             const path_detail = PathDetail{
                 .parent = page_number,
                 .child_index = child_index,
-                .child = node.child(child_index),
+                .child = node.child_at_slot(child_index),
             };
             page_number = path_detail.child;
             node = try self.pager.get_page(page.Page, page_number);
@@ -73,27 +72,22 @@ pub const BTree = struct {
         return path;
     }
 
-    pub fn insert(
-        self: *BTree,
-        root: muscle.PageNumber,
-        key: []const u8,
-        cell_bytes: []const u8,
-    ) !void {
-        var path = try self.search(root, key);
+    pub fn insert(self: *BTree, key: []const u8, cell_bytes: []const u8) !void {
+        var path = try self.search(key);
         defer path.deinit();
 
-        var leaf = root;
-        var leaf_index: ?u16 = null;
-        var leaf_parent: ?muscle.PageNumber = null;
+        var target_leaf_page = self.root_page_number;
+        var leaf_index_in_parent: ?u16 = null;
+        var leaf_parent_page: ?muscle.PageNumber = null;
 
         if (path.pop()) |leaf_parent_info| {
-            leaf_parent = leaf_parent_info.parent;
-            leaf_index = leaf_parent_info.child_index;
-            leaf = leaf_parent_info.child;
+            leaf_parent_page = leaf_parent_info.parent;
+            leaf_index_in_parent = leaf_parent_info.child_index;
+            target_leaf_page = leaf_parent_info.child;
         }
 
-        var leaf_node = try self.pager.get_page(page.Page, leaf);
-        const cell_view = page.Cell.init(cell_bytes, null);
+        var leaf_node = try self.pager.get_page(page.Page, target_leaf_page);
+        const cell = page.Cell.init(cell_bytes, null);
 
         switch (leaf_node.search(key, self.primary_key_data_type)) {
             .found => |_| {
@@ -101,13 +95,13 @@ pub const BTree = struct {
             },
             .go_down => |insert_at_slot| {
                 try self.balance(
-                    leaf,
-                    leaf_parent,
-                    leaf_index,
+                    target_leaf_page,
+                    leaf_parent_page,
+                    leaf_index_in_parent,
                     &path,
-                    .{ .FIRST_LEAF_OPERATION = .{
+                    .{ .LEAF_OPERATION = .{
                         .INSERT = .{
-                            .cell = cell_view,
+                            .cell = cell,
                             .insert_at_slot = insert_at_slot,
                         },
                     } },
@@ -116,35 +110,31 @@ pub const BTree = struct {
         }
     }
 
-    pub fn update(
-        self: *BTree,
-        root: muscle.PageNumber,
-        cell: page.Cell,
-    ) !void {
+    pub fn update(self: *BTree, cell: page.Cell) !void {
         const key = cell.get_keys_slice(false);
-        var path = try self.search(root, key);
+        var path = try self.search(key);
         defer path.deinit();
 
-        var leaf = root;
-        var leaf_index: ?u16 = null;
-        var leaf_parent: ?muscle.PageNumber = null;
+        var target_leaf_page = self.root_page_number;
+        var leaf_index_in_parent: ?u16 = null;
+        var leaf_parent_page: ?muscle.PageNumber = null;
 
         if (path.pop()) |leaf_parent_info| {
-            leaf_parent = leaf_parent_info.parent;
-            leaf_index = leaf_parent_info.child_index;
-            leaf = leaf_parent_info.child;
+            leaf_parent_page = leaf_parent_info.parent;
+            leaf_index_in_parent = leaf_parent_info.child_index;
+            target_leaf_page = leaf_parent_info.child;
         }
 
-        var leaf_node = try self.pager.get_page(page.Page, leaf);
+        var leaf_node = try self.pager.get_page(page.Page, target_leaf_page);
 
         switch (leaf_node.search(key)) {
             .found => |update_at_slot| {
                 try self.balance(
-                    leaf,
-                    leaf_parent,
-                    leaf_index,
+                    target_leaf_page,
+                    leaf_parent_page,
+                    leaf_index_in_parent,
                     &path,
-                    .{ .FIRST_LEAF_OPERATION = .{
+                    .{ .LEAF_OPERATION = .{
                         .UPDATE = .{
                             .cell = cell,
                             .update_at_slot = update_at_slot,
@@ -158,34 +148,30 @@ pub const BTree = struct {
         }
     }
 
-    pub fn delete(
-        self: *BTree,
-        root: muscle.PageNumber,
-        key: []const u8,
-    ) !void {
-        var path = try self.search(root, key);
+    pub fn delete(self: *BTree, key: []const u8) !void {
+        var path = try self.search(key);
         defer path.deinit();
 
-        var leaf = root;
-        var leaf_index: ?u16 = null;
-        var leaf_parent: ?muscle.PageNumber = null;
+        var target_leaf_page = self.root_page_number;
+        var leaf_index_in_parent: ?u16 = null;
+        var leaf_parent_page: ?muscle.PageNumber = null;
 
         if (path.pop()) |leaf_parent_info| {
-            leaf_parent = leaf_parent_info.parent;
-            leaf_index = leaf_parent_info.child_index;
-            leaf = leaf_parent_info.child;
+            leaf_parent_page = leaf_parent_info.parent;
+            leaf_index_in_parent = leaf_parent_info.child_index;
+            target_leaf_page = leaf_parent_info.child;
         }
 
-        var leaf_node = try self.pager.get_page(page.Page, leaf);
+        var leaf_node = try self.pager.get_page(page.Page, target_leaf_page);
 
         switch (leaf_node.search(key, self.primary_key_data_type)) {
             .found => |delete_at_slot| {
                 try self.balance(
-                    leaf,
-                    leaf_parent,
-                    leaf_index,
+                    target_leaf_page,
+                    leaf_parent_page,
+                    leaf_index_in_parent,
                     &path,
-                    .{ .FIRST_LEAF_OPERATION = .{
+                    .{ .LEAF_OPERATION = .{
                         .DELETE = .{
                             .delete_at_slot = delete_at_slot,
                         },
@@ -198,12 +184,6 @@ pub const BTree = struct {
         }
     }
 
-    const CellInfoForBalance = struct {
-        // raw cell bytes
-        cell_bytes: std.ArrayList(u8),
-        slot_index: u16,
-        operation: enum { insert, update, delete },
-    };
     const LeafOperation = union(enum) {
         INSERT: struct {
             cell: page.Cell,
@@ -217,94 +197,85 @@ pub const BTree = struct {
             delete_at_slot: page.Page.SlotArrayIndex,
         },
     };
-    const DistributionInfo = std.BoundedArray(struct {
-        sibling_slot_index: page.Page.SlotArrayIndex, // @Todo rename
+    const SiblingUpdateInfo = std.BoundedArray(struct {
+        sibling_slot_index: page.Page.SlotArrayIndex,
         // zero indicates we freed sibling page
-        sibling_page_number: muscle.PageNumber, // @Todo rename
+        sibling_page_number: muscle.PageNumber,
     }, MAX_LOADED_SIBLINGS);
-    const BTreeChangeInfo = struct {
-        distribution_info: DistributionInfo,
+    const TreeChangeInfo = struct {
+        sibling_updates: SiblingUpdateInfo,
         // new page should get attached after last sibling
-        new_page_number: ?muscle.PageNumber = null,
+        newly_created_page: ?muscle.PageNumber = null,
     };
     fn balance(
         self: *BTree,
-        child_page_number: muscle.PageNumber, // the page we are balancing
+        target_page_number: muscle.PageNumber, // the page we are balancing
         parent_page_number: ?muscle.PageNumber, // null for root page
-        child_index_inside_parent: ?u16, // null for root node
+        target_page_slot_inside_parent: ?u16, // null for root node
         path: *std.ArrayList(PathDetail),
-        leaf_operation_or_prev_change_info: union(enum) {
-            FIRST_LEAF_OPERATION: LeafOperation,
-            CHANGE_INFO: BTreeChangeInfo,
+        modification_request: union(enum) {
+            LEAF_OPERATION: LeafOperation,
+            // @Todo
+            PROPAGATED_CHANGES: TreeChangeInfo,
         },
     ) !void {
-
-        // @Todo I don't like this name
-        var child = try self.pager.get_page(page.Page, child_page_number);
-
-        const is_leaf = child.is_leaf();
+        var target_page = try self.pager.get_page(page.Page, target_page_number);
+        const is_leaf = target_page.is_leaf();
         const is_root = parent_page_number == null;
 
         if (is_root) {
             if (is_leaf) {
                 var save = true;
-                switch (leaf_operation_or_prev_change_info.FIRST_LEAF_OPERATION) {
+                switch (modification_request.LEAF_OPERATION) {
                     .INSERT => |data| {
-                        child.insert(data.cell, data.insert_at_slot) catch {
+                        target_page.insert(data.cell, data.insert_at_slot) catch {
                             save = false;
-                            try self.split_leaf_root(&child, child_page_number, true, data.cell, data.insert_at_slot);
+                            try self.split_leaf_root(&target_page, target_page_number, true, data.cell, data.insert_at_slot);
                         };
-
-                        if (save) try self.pager.update_page(child_page_number, &child);
                     },
 
                     .UPDATE => |data| {
-                        child.update(data.cell, data.update_at_slot) catch {
+                        target_page.update(data.cell, data.update_at_slot) catch {
                             save = false;
-                            try self.split_leaf_root(&child, child_page_number, false, data.cell, data.update_at_slot);
+                            try self.split_leaf_root(&target_page, target_page_number, false, data.cell, data.update_at_slot);
                         };
                     },
 
                     .DELETE => |data| {
-                        child.remove(data.delete_at_slot);
+                        target_page.remove(data.delete_at_slot);
                         save = true;
                     },
                 }
 
-                if (save) try self.pager.update_page(child_page_number, &child);
+                if (save) try self.pager.update_page(target_page_number, &target_page);
             } else {
-                //std.debug.print("change_info new_page_number: {any}, distribution_info: {any}\n", .{ leaf_operation_or_prev_change_info.CHANGE_INFO.new_page_number, leaf_operation_or_prev_change_info.CHANGE_INFO.distribution_info.constSlice() });
-
-                // we need to know if we can fit updated cells and the new page inside root
-                // if we can fit them then we don't need to create new left and right.
-
-                const space_needed = try self.get_needed_space(
-                    &child,
-                    &leaf_operation_or_prev_change_info.CHANGE_INFO,
+                const space_needed = try self.calculate_space_after_modifications(
+                    &target_page,
+                    &modification_request.PROPAGATED_CHANGES,
                 );
 
                 if (space_needed <= page.Page.CONTENT_MAX_SIZE) {
                     try self.update_internal_node_with_change_info(
-                        &child,
-                        &leaf_operation_or_prev_change_info.CHANGE_INFO,
+                        &target_page,
+                        &modification_request.PROPAGATED_CHANGES,
                     );
 
                     // if root becomes empty after update, then right child will become new root
-                    if (child.content_size == 0) {
+                    if (target_page.content_size == 0) {
                         // copy the right_child stuff inside root and free right child
-                        const right_child = child.right_child;
+                        const right_child = target_page.right_child;
                         assert(right_child > 0);
-                        child = try self.pager.get_page(page.Page, right_child);
+                        target_page = try self.pager.get_page(page.Page, right_child);
                         try self.pager.free(self.metadata, right_child);
                     }
 
                     // persist
-                    try self.pager.update_page(child_page_number, child);
+                    try self.pager.update_page(target_page_number, target_page);
                 } else {
                     try self.split_internal_root(
-                        &child,
-                        child_page_number,
-                        leaf_operation_or_prev_change_info.CHANGE_INFO,
+                        &target_page,
+                        target_page_number,
+                        modification_request.PROPAGATED_CHANGES,
                     );
                 }
             }
@@ -312,88 +283,87 @@ pub const BTree = struct {
             return;
         }
 
-        var next_change_info: ?BTreeChangeInfo = null;
+        // @Todo
+        var next_change_info: ?TreeChangeInfo = null;
 
         if (is_leaf) {
             var save = true;
-            switch (leaf_operation_or_prev_change_info.FIRST_LEAF_OPERATION) {
+            switch (modification_request.LEAF_OPERATION) {
                 .INSERT => |data| {
-                    child.insert(data.cell, data.insert_at_slot) catch {
+                    target_page.insert(data.cell, data.insert_at_slot) catch {
                         save = false;
 
-                        // 1. load siblings and distribute the cells
-                        // 2. after distribution if we create new page or free some page then pass that info to parent.
-
-                        var siblings = try Siblings.init(0);
-                        try self.load_siblings(parent_page_number.?, child_index_inside_parent.?, &siblings);
+                        var siblings = try LoadedSiblings.init(0);
+                        try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
                         // distribute
-                        next_change_info = try self.distribute_leafs(&siblings, true, data.cell, child_page_number, data.insert_at_slot);
+                        next_change_info = try self.modify_leaf(&siblings, true, data.cell, target_page_number, data.insert_at_slot);
                     };
                 },
 
                 .UPDATE => |data| {
-                    child.update(data.cell, data.update_at_slot) catch {
+                    target_page.update(data.cell, data.update_at_slot) catch {
                         save = false;
 
-                        var siblings = try Siblings.init(0);
-                        try self.load_siblings(parent_page_number.?, child_index_inside_parent.?, &siblings);
+                        var siblings = try LoadedSiblings.init(0);
+                        try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
                         // distribute
-                        next_change_info = try self.distribute_leafs(&siblings, false, data.cell, child_page_number, data.update_at_slot);
+                        next_change_info = try self.modify_leaf(&siblings, false, data.cell, target_page_number, data.update_at_slot);
                     };
                 },
 
                 .DELETE => |data| {
-                    child.remove(data.delete_at_slot);
+                    target_page.remove(data.delete_at_slot);
 
                     // need to check if the child becomes empty after deleting an key
                     // if it does then we will need to free this page and balance the tree
-                    if (child.num_slots == 0) {
-                        next_change_info = BTreeChangeInfo{
-                            .distribution_info = try DistributionInfo.init(0),
+                    if (target_page.num_slots == 0) {
+                        // @Todo
+                        next_change_info = TreeChangeInfo{
+                            .sibling_updates = try SiblingUpdateInfo.init(0),
                         };
-                        try next_change_info.?.distribution_info.append(
+                        try next_change_info.?.sibling_updates.append(
                             .{
                                 .sibling_page_number = 0,
-                                .sibling_slot_index = child_index_inside_parent.?,
+                                .sibling_slot_index = target_page_slot_inside_parent.?,
                             },
                         );
-                        try self.free_page(child_page_number);
+                        try self.free_page(target_page_number);
                         save = false;
                     }
                 },
             }
 
-            if (save) try self.pager.update_page(child_page_number, &child);
+            if (save) try self.pager.update_page(target_page_number, &target_page);
         } else {
             // internal nodes
 
-            const space_needed = try self.get_needed_space(
-                &child,
-                &leaf_operation_or_prev_change_info.CHANGE_INFO,
+            const space_needed = try self.calculate_space_after_modifications(
+                &target_page,
+                &modification_request.PROPAGATED_CHANGES,
             );
 
             if (space_needed == 0 or space_needed > page.Page.CONTENT_MAX_SIZE) {
-                var siblings = try Siblings.init(0);
-                try self.load_siblings(parent_page_number.?, child_index_inside_parent.?, &siblings);
+                var siblings = try LoadedSiblings.init(0);
+                try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
-                next_change_info = try self.distribute_internal_node(
+                next_change_info = try self.modify_internal(
                     &siblings,
-                    child_page_number,
-                    &leaf_operation_or_prev_change_info.CHANGE_INFO,
+                    target_page_number,
+                    &modification_request.PROPAGATED_CHANGES,
                 );
             } else {
                 try self.update_internal_node_with_change_info(
-                    &child,
-                    &leaf_operation_or_prev_change_info.CHANGE_INFO,
+                    &target_page,
+                    &modification_request.PROPAGATED_CHANGES,
                 );
 
                 // assert that we should not end up removing all cells
-                assert(child.num_slots > 0);
+                assert(target_page.num_slots > 0);
 
                 // persist
-                try self.pager.update_page(child_page_number, child);
+                try self.pager.update_page(target_page_number, target_page);
             }
         }
 
@@ -409,7 +379,7 @@ pub const BTree = struct {
                 parent_info.parent,
                 parent_info.child_index,
                 path,
-                .{ .CHANGE_INFO = next_change_info.? },
+                .{ .PROPAGATED_CHANGES = next_change_info.? },
             );
         } else {
             try self.balance(
@@ -417,19 +387,19 @@ pub const BTree = struct {
                 null,
                 null,
                 path,
-                .{ .CHANGE_INFO = next_change_info.? },
+                .{ .PROPAGATED_CHANGES = next_change_info.? },
             );
         }
     }
 
     const MAX_LOADED_SIBLINGS = 3;
-    const Siblings = std.BoundedArray(struct { page_number: muscle.PageNumber, page: page.Page, slot_index: page.Page.SlotArrayIndex }, MAX_LOADED_SIBLINGS);
-    // @Perf we can just use left and right pointers instead of using parent.child().
+    const LoadedSiblings = std.BoundedArray(struct { page_number: muscle.PageNumber, page: page.Page, slot_index: page.Page.SlotArrayIndex }, MAX_LOADED_SIBLINGS);
+    // @Perf we can just use left and right pointers instead of using parent
     fn load_siblings(
         self: *BTree,
         parent_page_number: muscle.PageNumber,
         child_index: u16,
-        siblings: *Siblings,
+        siblings: *LoadedSiblings,
     ) !void {
         const parent = try self.pager.get_page(page.Page, parent_page_number);
 
@@ -439,7 +409,7 @@ pub const BTree = struct {
         for (child_index -| num_siblings_per_side..child_index + num_siblings_per_side + 1) |index| {
             if (index > parent.num_slots) break;
 
-            const page_number = parent.child(@intCast(index));
+            const page_number = parent.child_at_slot(@intCast(index));
             try siblings.append(.{ .page_number = page_number, .page = try self.pager.get_page(page.Page, page_number), .slot_index = @intCast(index) });
         }
     }
@@ -470,9 +440,10 @@ pub const BTree = struct {
     fn update_internal_node_with_change_info(
         self: *BTree,
         node: *page.Page,
-        change_info: *const BTreeChangeInfo,
+        // @Todo
+        change_info: *const TreeChangeInfo,
     ) !void {
-        for (change_info.distribution_info.constSlice()) |info| {
+        for (change_info.sibling_updates.constSlice()) |info| {
             if (info.sibling_page_number == 0) {
                 // we have freed child attached to this node
                 // we should also let go of this divider key
@@ -500,8 +471,8 @@ pub const BTree = struct {
         }
 
         // if we have new page then add new divider key after last sibling
-        if (change_info.new_page_number) |new_page_number| {
-            const last_sibling_info = change_info.distribution_info.get(change_info.distribution_info.len - 1);
+        if (change_info.newly_created_page) |new_page_number| {
+            const last_sibling_info = change_info.sibling_updates.get(change_info.sibling_updates.len - 1);
 
             var divider_cell: page.Cell = undefined;
 
@@ -525,13 +496,17 @@ pub const BTree = struct {
 
     // this tells how much resultant space will become after incorporating
     // prev distribution change with existing cells
-    fn get_needed_space(self: *BTree, curr_state: *page.Page, change_info: *const BTreeChangeInfo) !usize {
+    fn calculate_space_after_modifications(
+        self: *BTree,
+        curr_state: *page.Page,
+        change_info: *const TreeChangeInfo,
+    ) !usize {
         var space_needed: usize = 0;
         var last_increment: usize = 0;
 
-        const first_updated_slot_index = change_info.distribution_info.get(0).sibling_slot_index;
+        const first_updated_slot_index = change_info.sibling_updates.get(0).sibling_slot_index;
         const last_updated_slot_index =
-            change_info.distribution_info.get(change_info.distribution_info.len - 1).sibling_slot_index;
+            change_info.sibling_updates.get(change_info.sibling_updates.len - 1).sibling_slot_index;
 
         for (0..first_updated_slot_index) |slot_index| {
             const cell = curr_state.cell_at_slot(@intCast(slot_index));
@@ -539,7 +514,7 @@ pub const BTree = struct {
             space_needed += last_increment;
         }
 
-        for (change_info.distribution_info.constSlice()) |info| {
+        for (change_info.sibling_updates.constSlice()) |info| {
             // for right child we don't need space
             // but if the page was previously freed then previous cell will give new right child and hence
             // we need to subtract space
@@ -569,7 +544,7 @@ pub const BTree = struct {
             }
         }
 
-        if (change_info.new_page_number) |new_page_number| {
+        if (change_info.newly_created_page) |new_page_number| {
             const node = try self.pager.get_page(page.Page, new_page_number);
             const new_cell_size = self.get_divider_key(&node).len + page.Cell.HEADER_SIZE;
             space_needed += @intCast(new_cell_size);
@@ -579,19 +554,14 @@ pub const BTree = struct {
         return space_needed;
     }
 
-    fn distribute_leafs(
+    fn modify_leaf(
         self: *BTree,
-        siblings: *Siblings,
+        siblings: *LoadedSiblings,
         is_new_cell: bool,
         cell: page.Cell,
         cell_page_number: muscle.PageNumber,
         cell_slot_index: page.Page.SlotArrayIndex,
-    ) !BTreeChangeInfo {
-        //
-        // @Perf
-        // we can improve to first determine whether if we distribute would that make enough
-        // space, If not then we don't need to distribute.
-
+    ) !TreeChangeInfo {
         var raw_cells = std.ArrayList([]u8).init(self.allocator);
 
         defer {
@@ -636,11 +606,11 @@ pub const BTree = struct {
             }
 
             // reset sibling
-            s.page.reset();
+            s.page.reset_content();
         }
 
-        var change_info = BTreeChangeInfo{
-            .distribution_info = try DistributionInfo.init(0),
+        var change_info = TreeChangeInfo{
+            .sibling_updates = try SiblingUpdateInfo.init(0),
         };
 
         // distribute
@@ -652,7 +622,7 @@ pub const BTree = struct {
             if (curr == raw_cells.items.len) {
                 try self.free_page(sib.page_number);
                 // mark siblings as free
-                try change_info.distribution_info.append(.{
+                try change_info.sibling_updates.append(.{
                     .sibling_slot_index = sib.slot_index,
                     .sibling_page_number = 0,
                 });
@@ -670,7 +640,7 @@ pub const BTree = struct {
                 };
 
                 if (failed) {
-                    try change_info.distribution_info.append(.{
+                    try change_info.sibling_updates.append(.{
                         .sibling_slot_index = sib.slot_index,
                         .sibling_page_number = sib.page_number,
                     });
@@ -707,7 +677,7 @@ pub const BTree = struct {
             try self.pager.update_page(last_sibling.page_number, &last_sibling.page);
             try self.pager.update_page(new_page_number, &new_page);
 
-            change_info.new_page_number = new_page_number;
+            change_info.newly_created_page = new_page_number;
         } else {
             // when we have freed some siblings we need to adjust left, right pointers
             if (last_filled_sibling_index < siblings.len - 1) {
@@ -732,7 +702,7 @@ pub const BTree = struct {
         self: *BTree,
         root: *page.Page,
         root_page_number: muscle.PageNumber,
-        change_info: BTreeChangeInfo,
+        change_info: TreeChangeInfo,
     ) !void {
         var raw_cells = std.ArrayList([]u8).init(self.allocator);
 
@@ -744,7 +714,7 @@ pub const BTree = struct {
         }
 
         // first collect all cells before siblings
-        const first_sibling_index = change_info.distribution_info.get(0).sibling_slot_index;
+        const first_sibling_index = change_info.sibling_updates.get(0).sibling_slot_index;
         for (0..first_sibling_index) |slot| {
             var bytes_slice: []u8 = undefined;
 
@@ -755,12 +725,12 @@ pub const BTree = struct {
         var skip_new_page_cell = false;
 
         // siblings are updated so get the updated last cells
-        for (change_info.distribution_info.constSlice()) |sibling_info| {
+        for (change_info.sibling_updates.constSlice()) |sibling_info| {
             // handle the last sibling
             if (sibling_info.sibling_slot_index == root.num_slots) {
                 // last sibling is right_child so it doesn't need a cell
                 // but if we do have a new page after last sibling we will create a cell here itself
-                if (change_info.new_page_number) |new_page_number| {
+                if (change_info.newly_created_page) |new_page_number| {
                     root.right_child = new_page_number;
                     skip_new_page_cell = true;
                 } else {
@@ -782,7 +752,7 @@ pub const BTree = struct {
         }
 
         // if new page is added need to add cell
-        if (change_info.new_page_number) |new_page_number| {
+        if (change_info.newly_created_page) |new_page_number| {
             if (!skip_new_page_cell) {
                 // cell content depends new page
                 var cell: page.Cell = undefined;
@@ -796,7 +766,7 @@ pub const BTree = struct {
         }
 
         // collect remaning cells from last_sibling_index .. root.num_slots
-        const last_sibling_index = change_info.distribution_info.get(change_info.distribution_info.len - 1).sibling_slot_index;
+        const last_sibling_index = change_info.sibling_updates.get(change_info.sibling_updates.len - 1).sibling_slot_index;
         if (last_sibling_index + 1 < root.num_slots) {
             for (last_sibling_index + 1..root.num_slots) |slot| {
                 var bytes_slice: []u8 = undefined;
@@ -858,16 +828,16 @@ pub const BTree = struct {
         }
     }
 
-    fn distribute_internal_node(
+    fn modify_internal(
         self: *BTree,
-        siblings: *Siblings,
+        siblings: *LoadedSiblings,
         // for which page number below change info is for
         change_info_page_number: muscle.PageNumber,
         // previously done updates to page which is amongst loaded siblings
-        change_info: *const BTreeChangeInfo,
-    ) !BTreeChangeInfo {
-        var next_change_info = BTreeChangeInfo{
-            .distribution_info = try DistributionInfo.init(0),
+        change_info: *const TreeChangeInfo,
+    ) !TreeChangeInfo {
+        var next_change_info = TreeChangeInfo{
+            .sibling_updates = try SiblingUpdateInfo.init(0),
         };
         var raw_cells = std.ArrayList([]u8).init(self.allocator);
 
@@ -886,9 +856,9 @@ pub const BTree = struct {
             var bytes_slice: []u8 = undefined;
 
             if (sibling_page_number == change_info_page_number) {
-                const first_updated_slot_index = change_info.distribution_info.get(0).sibling_slot_index;
+                const first_updated_slot_index = change_info.sibling_updates.get(0).sibling_slot_index;
                 const last_updated_slot_index =
-                    change_info.distribution_info.get(change_info.distribution_info.len - 1).sibling_slot_index;
+                    change_info.sibling_updates.get(change_info.sibling_updates.len - 1).sibling_slot_index;
 
                 // collect cells before update
                 for (0..first_updated_slot_index) |slot_index| {
@@ -897,7 +867,7 @@ pub const BTree = struct {
                 }
 
                 // collect latest with change info
-                for (change_info.distribution_info.constSlice()) |info| {
+                for (change_info.sibling_updates.constSlice()) |info| {
                     // collect latest info for pages which we didn't free
                     if (info.sibling_page_number == 0) break;
 
@@ -909,7 +879,7 @@ pub const BTree = struct {
                 }
 
                 // new ones should be added before adding remaining
-                if (change_info.new_page_number) |new_page_number| {
+                if (change_info.newly_created_page) |new_page_number| {
                     const new_page = try self.pager.get_page(page.Page, new_page_number);
                     const cell = page.Cell.init(self.get_divider_key(&new_page), new_page_number);
                     bytes_slice = try self.allocator.alloc(u8, cell.size);
@@ -953,7 +923,7 @@ pub const BTree = struct {
             }
 
             // reset
-            sibling.reset();
+            sibling.reset_content();
         }
 
         // put the cells starting from first sibling until sibling gets full
@@ -969,7 +939,7 @@ pub const BTree = struct {
             if (curr == raw_cells.items.len) {
                 try self.free_page(sib.page_number);
                 // mark siblings as free
-                try next_change_info.distribution_info.append(.{
+                try next_change_info.sibling_updates.append(.{
                     .sibling_slot_index = sib.slot_index,
                     .sibling_page_number = 0,
                 });
@@ -1011,7 +981,7 @@ pub const BTree = struct {
                     const cell = page.Cell.from_bytes(raw_cells.items[curr]);
                     sib.page.right_child = cell.left_child;
 
-                    try next_change_info.distribution_info.append(.{
+                    try next_change_info.sibling_updates.append(.{
                         .sibling_slot_index = sib.slot_index,
                         .sibling_page_number = sib.page_number,
                     });
@@ -1057,7 +1027,7 @@ pub const BTree = struct {
             try self.pager.update_page(last_sibling.page_number, &last_sibling.page);
             try self.pager.update_page(new_page_number, &new_page);
 
-            next_change_info.new_page_number = new_page_number;
+            next_change_info.newly_created_page = new_page_number;
         }
         // when we have freed some siblings we need to adjust left, right pointers
         else if (last_filled_sibling_index < siblings.len - 1) {
@@ -1076,7 +1046,6 @@ pub const BTree = struct {
         return next_change_info;
     }
 
-    // @Todo fixate on better name?
     fn split_leaf_root(
         self: *BTree,
         root: *page.Page,
@@ -1119,7 +1088,7 @@ pub const BTree = struct {
         const pivot_cell = page.Cell.init(self.get_divider_key(&left), left_page_number);
 
         // reset the root
-        root.reset();
+        root.reset_content();
         // attach right page
         root.right_child = right_page_number;
         // attach left page
@@ -1134,9 +1103,4 @@ pub const BTree = struct {
         try self.pager.update_page(left_page_number, &left);
         try self.pager.update_page(right_page_number, &right);
     }
-};
-
-const UnbalancedPage = struct {
-    main: muscle.PageNumber,
-    overflow_map: []struct {},
 };

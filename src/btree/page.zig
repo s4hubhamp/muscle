@@ -88,10 +88,7 @@ pub const Page = extern struct {
     right: muscle.PageNumber,
 
     // content size is size of slot array + cells
-    // used space by the content
-    // used to determine whether page is overflow or not
-    // this tells about the size that is in use.
-    // If we have some empty cells in the middle those cells will not account in the calculation of the size
+    // if we have some empty cells in the middle those cells will not account in the calculation of the size
     content_size: u16,
     // content is slot array + cells
     // slot array stores the offset to cells from start of the content.
@@ -103,13 +100,6 @@ pub const Page = extern struct {
         assert(@sizeOf(Page) == muscle.PAGE_SIZE);
         assert(CONTENT_MAX_SIZE + HEADER_SIZE == muscle.PAGE_SIZE);
     }
-
-    // when we insert some key inside the parent or initially inside the leaf it can
-    // overflow before we call balance on it. For that case we actually don't insert it
-    // inside the Page content, instead we keep it inside overflow map.
-    // @Todo I feel like this should not be part of the struct itself and can be kept inside pager OR
-    // the btree balance algorithm function argument.
-    //temp__overflow_map: std.hash_map.AutoHashMapUnmanaged(SlotIndex, []u8),
 
     pub fn init() Page {
         return Page{
@@ -123,9 +113,7 @@ pub const Page = extern struct {
         };
     }
 
-    // @Note: this is just to reset content. This does not changes *right_child*, *left* and *right*
-    // @Name: Rename to something like reset_content_and_pointers?
-    pub fn reset(self: *Page) void {
+    pub fn reset_content(self: *Page) void {
         self.num_slots = 0;
         self.last_used_offset = CONTENT_MAX_SIZE;
         self.content_size = 0;
@@ -146,11 +134,6 @@ pub const Page = extern struct {
 
     pub fn free_space(self: *const Page) u16 {
         return CONTENT_MAX_SIZE - self.content_size;
-    }
-
-    // A page is considered underflow if it's less than half full
-    pub fn is_underflow(self: *const Page) bool {
-        return self.free_space() < CONTENT_MAX_SIZE / 2;
     }
 
     fn put_cell_at_offset(self: *Page, cell: Cell, offset: SlotArrayEntry) void {
@@ -208,7 +191,6 @@ pub const Page = extern struct {
         self.content_size += @as(u16, @intCast(cell.size));
     }
 
-    // @Todo check if we are using it or not
     pub fn remove(self: *Page, slot_index: SlotArrayIndex) void {
         assert(slot_index < self.num_slots);
 
@@ -297,7 +279,7 @@ pub const Page = extern struct {
     }
 
     /// Returns the child at the given `index`.
-    pub fn child(self: *const Page, slot_index: SlotArrayIndex) muscle.PageNumber {
+    pub fn child_at_slot(self: *const Page, slot_index: SlotArrayIndex) muscle.PageNumber {
         if (slot_index == self.num_slots) {
             return self.right_child;
         } else {
@@ -341,9 +323,6 @@ pub const Page = extern struct {
             .go_down = @intCast(low),
         };
     }
-
-    //fn is_underflow(self: *const Page) bool {}
-    //fn is_overflow(self: *const Page) void {}
 
     pub fn is_leaf(self: *const Page) bool {
         return self.right_child == 0;
@@ -420,10 +399,8 @@ pub const INTERNAL_CELL_CONTENT_SIZE_LIMIT = blk: { // 2031
 pub const Cell = struct {
     pub const HEADER_SIZE = 6;
     // total size of cell. HEADER_SIZE + content size
-    // this must be placed at first, see serialize() below.
     size: u16,
-    //
-    // @Perf we can skip having left_child for leaf nodes
+    // @Perf we can skip having left_child for leaf nodes?
     left_child: muscle.PageNumber,
     //
     // On Main Table
@@ -467,10 +444,8 @@ pub const Cell = struct {
         @memcpy(slice[6..slice.len], self.content);
     }
 
-    // @Todo: rename to init_from_bytes
     pub fn from_bytes(slice: []const u8) Cell {
         // read cell size
-        // @Todo If size is total size then why we are calculating it again? It'll be equal to slice.len?
         const cell_size = std.mem.readInt(
             u16,
             slice[0..@sizeOf(u16)],
@@ -483,7 +458,7 @@ pub const Cell = struct {
             .little,
         );
 
-        // @Todo @Perf we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
+        // @Perf we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
         return Cell{
             .size = cell_size,
             .left_child = left_child,

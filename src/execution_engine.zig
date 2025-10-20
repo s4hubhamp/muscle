@@ -382,10 +382,11 @@ pub const ExecutionEngine = struct {
         var btree = BTree.init(
             &self.pager,
             metadata_page,
+            table.?.root,
             primary_key_type,
             self.allocator,
         );
-        try btree.insert(table.?.root, primary_key_bytes, buffer.constSlice());
+        try btree.insert(primary_key_bytes, buffer.constSlice());
 
         // update metadata
         try metadata_page.set_tables(self.allocator, tables);
@@ -435,10 +436,11 @@ pub const ExecutionEngine = struct {
         var btree = BTree.init(
             &self.pager,
             metadata_page,
+            table.?.root,
             table.?.columns[0].data_type,
             self.allocator,
         );
-        try btree.delete(table.?.root, buffer.constSlice());
+        try btree.delete(buffer.constSlice());
 
         // update metadata
         try self.pager.update_page(0, metadata_page);
@@ -625,7 +627,8 @@ pub const ExecutionEngine = struct {
             result.btree_height += 1;
             curr_page_number = first_page_in_level.?;
             curr_page = try self.pager.get_page(page.Page, curr_page_number);
-            first_page_in_level = if (!curr_page.is_leaf()) curr_page.child(0) else null;
+            first_page_in_level =
+                if (!curr_page.is_leaf()) curr_page.child_at_slot(0) else null;
 
             while (curr_page_number != 0) {
                 try collect_page_info(&result.pages, curr_page_number, curr_page, primary_key_data_type);
