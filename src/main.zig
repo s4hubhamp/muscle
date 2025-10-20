@@ -379,18 +379,72 @@ test "test tree operations on text primary key" {
 
     // tree state
     // 1.                         (1)[BBBB..]
-    // 1.             (?)[AAAA..,                       CCCCC..]
+    // 1.             (6)[AAAA..,                       CCCCC..]
     // 2. (3)[AAAAAA..]         (2)[BBBBBBB..]  (4)[CCCCC..]    (5)[DDDDD..]
 
     // Case: Internal node merge
     {
-        const txt = [_]u8{66} ** 2023;
+        var txt = [_]u8{66} ** 2023;
         delete_query.Delete.key = .{ .TEXT = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
         try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
+        metadata.?.SelectTableMetadataQueryResult.deinit();
+
+        // insert B back
+        _ = try engine.execute_query(get_insert_query(&txt));
+        metadata = try engine.execute_query(select_metadata_query);
+        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
+        metadata.?.SelectTableMetadataQueryResult.deinit();
+
+        // Delete A
+        for (&txt) |*char| char.* = 65;
+        delete_query.Delete.key = .{ .TEXT = &txt };
+        _ = try engine.execute_query(delete_query);
+        metadata = try engine.execute_query(select_metadata_query);
+        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
+        metadata.?.SelectTableMetadataQueryResult.deinit();
+
+        // insert A back
+        _ = try engine.execute_query(get_insert_query(&txt));
+        metadata = try engine.execute_query(select_metadata_query);
+        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
+        metadata.?.SelectTableMetadataQueryResult.deinit();
+
+        // Delete C
+        for (&txt) |*char| char.* = 67;
+        delete_query.Delete.key = .{ .TEXT = &txt };
+        _ = try engine.execute_query(delete_query);
+        metadata = try engine.execute_query(select_metadata_query);
+        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
+        metadata.?.SelectTableMetadataQueryResult.deinit();
+
+        // insert C back
+        _ = try engine.execute_query(get_insert_query(&txt));
+        metadata = try engine.execute_query(select_metadata_query);
+        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
+        metadata.?.SelectTableMetadataQueryResult.deinit();
+
+        // Delete D
+        for (&txt) |*char| char.* = 68;
+        delete_query.Delete.key = .{ .TEXT = &txt };
+        _ = try engine.execute_query(delete_query);
+        metadata = try engine.execute_query(select_metadata_query);
+        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
+        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
         metadata.?.SelectTableMetadataQueryResult.deinit();
     }
+
+    // tree state
+    // 1.             (1)[AAAA..,           BBBBB..]
+    // 2. (4)[AAAAAA..]         (5)[BBBBB..]        (7)[CCCCC..]
 
     const select_query = Query{ .Select = .{ .table_name = table_name } };
     _ = try engine.execute_query(select_query);
