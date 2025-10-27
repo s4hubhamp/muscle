@@ -1103,3 +1103,7 @@ pub const BTree = struct {
         try self.pager.update_page(right_page_number, &right);
     }
 };
+
+test {
+    _ = @import("./btree-tests.zig");
+}
