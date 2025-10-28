@@ -12,7 +12,7 @@ const FreePage = page.FreePage;
 const Page = page.Page;
 
 // number of pages we can have at a time inside our cache
-const MAX_CACHE_SIZE = 69;
+const MAX_CACHE_SIZE = 1024;
 
 // When this count is hit, we will commit before proceeding to next query
 // various data structures below are optmized based on this number. Since this is a
@@ -56,7 +56,7 @@ pub const Pager = struct {
         }
 
         var dirty_pages = try std.BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT).init(0);
-        var cache = try PagerCache.init();
+        var cache = try PagerCache.init(allocator);
         // insert metadata page into cache
         try cache.put(0, metadata_buffer, dirty_pages.constSlice());
 
@@ -71,8 +71,7 @@ pub const Pager = struct {
     }
 
     pub fn deinit(self: *Pager) void {
-        // @cleanup
-        _ = self;
+        self.cache.deinit();
     }
 
     // commit gets called when we reach `max_dirty_pages` OR before returning the results to client
@@ -261,30 +260,36 @@ pub const Pager = struct {
     }
 };
 
-// @multithreading: When we have many threads we have to make sure that there are no more than one
-// mutable references to the same page
 const PagerCache = struct {
-    cache: std.BoundedArray(CacheItem, MAX_CACHE_SIZE),
+    cache: std.ArrayList(CacheItem),
+    allocator: std.mem.Allocator,
 
     const CacheItem = struct {
         page_number: u32,
         page: [muscle.PAGE_SIZE]u8,
     };
 
-    pub fn init() !PagerCache {
-        return PagerCache{ .cache = try std.BoundedArray(CacheItem, MAX_CACHE_SIZE).init(0) };
+    pub fn init(allocator: std.mem.Allocator) !PagerCache {
+        return PagerCache{
+            .cache = try std.ArrayList(CacheItem).initCapacity(allocator, MAX_CACHE_SIZE),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *PagerCache) void {
+        self.cache.deinit();
     }
 
     pub fn is_full(self: *PagerCache) bool {
-        return self.cache.len == self.cache.capacity();
+        return self.cache.items.len == self.cache.capacity;
     }
 
     // evict some page non dirty page to make space
     pub fn evict(self: *PagerCache, dirty_pages: []const u32) void {
         // we should be always able to evict
-        assert(dirty_pages.len < self.cache.len);
+        assert(dirty_pages.len < self.cache.items.len);
 
-        for (self.cache.constSlice(), 0..) |*item, item_index| {
+        for (self.cache.items, 0..) |*item, item_index| {
             const page_number = item.page_number;
             // check if this page is dirty
             var is_dirty = false;
@@ -303,7 +308,7 @@ const PagerCache = struct {
     }
 
     pub fn get(self: *PagerCache, page_number: u32) ?*const [muscle.PAGE_SIZE]u8 {
-        for (self.cache.slice()) |*item| {
+        for (self.cache.items) |*item| {
             if (item.page_number == page_number) return &item.page;
         }
 
@@ -314,7 +319,7 @@ const PagerCache = struct {
     pub fn put(self: *PagerCache, page_number: u32, buffer: [muscle.PAGE_SIZE]u8, dirty_pages: []const u32) !void {
         if (self.is_full()) self.evict(dirty_pages);
 
-        for (self.cache.slice()) |*item| {
+        for (self.cache.items) |*item| {
             if (item.page_number == page_number) {
                 item.page = buffer;
                 return;
