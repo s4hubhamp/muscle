@@ -110,8 +110,7 @@ pub const BTree = struct {
         }
     }
 
-    pub fn update(self: *BTree, cell: page.Cell) !void {
-        const key = cell.get_keys_slice(false);
+    pub fn update(self: *BTree, key: []const u8, cell_bytes: []const u8) !void {
         var path = try self.search(key);
         defer path.deinit();
 
@@ -126,8 +125,9 @@ pub const BTree = struct {
         }
 
         var leaf_node = try self.pager.get_page(page.Page, target_leaf_page);
+        const cell = page.Cell.init(cell_bytes, null);
 
-        switch (leaf_node.search(key)) {
+        switch (leaf_node.search(key, self.primary_key_data_type)) {
             .found => |update_at_slot| {
                 try self.balance(
                     target_leaf_page,
@@ -143,7 +143,7 @@ pub const BTree = struct {
                 );
             },
             .go_down => |_| {
-                return error.NotFound;
+                return error.KeyNotFound;
             },
         }
     }
