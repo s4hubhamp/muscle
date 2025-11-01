@@ -6,6 +6,7 @@ pub const ClientError = error{
     ColumnDoesNotExist,
     DuplicateColumnName,
     DuplicateColumns,
+    KeyNotFound,
 
     // Data validation errors
     TypeMismatch,
