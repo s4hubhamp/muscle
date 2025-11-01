@@ -19,13 +19,20 @@ const MAX_CACHE_SIZE = 1024;
 // small and well known number we've choosen Arrays instead of HashMaps since for smaller
 // number of elements arrays perform better or same as hash maps and we can have
 // *static* allocations.
-const MAX_DIRTY_COUNT_BEFORE_COMMIT = 64;
+const MAX_DIRTY_COUNT_BEFORE_COMMIT = 1000;
 
 comptime {
     // This is important.
     // cache.put should always be able to evict non dirty pages.
     // Hence we need to make sure that number of dirty pages are always less than max cached capacity.
     assert(MAX_DIRTY_COUNT_BEFORE_COMMIT < MAX_CACHE_SIZE);
+}
+
+const MAX_JOURNAL_UNSAVED_ENTRIES = 64;
+
+comptime {
+    // Journal unsaved entries will not go over dirty pages
+    assert(MAX_JOURNAL_UNSAVED_ENTRIES < MAX_DIRTY_COUNT_BEFORE_COMMIT);
 }
 
 // Pager is responsible to manage pages of database file.
@@ -95,10 +102,6 @@ pub const Pager = struct {
         // sort for sequential io
         std.mem.sort(u32, self.dirty_pages.slice(), {}, comptime std.sort.asc(u32));
         for (self.dirty_pages.slice()) |page_number| {
-            //print("commiting page: {} content: {any}\n", .{
-            //    page_number,
-            //    std.mem.asBytes(self.cache.get(page_number).?),
-            //});
             _ = self.io.write(
                 page_number,
                 // dirty pages will always be inside the cache
@@ -109,16 +112,12 @@ pub const Pager = struct {
             };
         }
 
-        //print("Persisted dirty pages.\n", .{});
-
         // clear dirty pages
         self.dirty_pages.clear();
 
         if (execution_completed) self.journal.clear() catch {
             return error.JournalError;
         };
-
-        //print("Commit successfull.\n", .{});
     }
 
     // Moves the original page copies from the journal file back to the database file.
@@ -167,13 +166,13 @@ pub const Pager = struct {
             if (self.dirty_pages.len == self.dirty_pages.capacity()) try self.commit(false);
             // mark dirty
             try self.dirty_pages.append(page_number);
-        }
 
-        // if some page already dirty we know for sure that it's part of journal
-        // if page is not dirty it still can be part of journal.record because we might have
-        // updated it during previous partial commit(commit called from Pager).
-        // So it is the job of journal to check for duplicates
-        try self.journal.record(page_number, original.*);
+            // if some page already dirty we know for sure that it's part of journal
+            // if page is not dirty it still can be part of journal.record because we might have
+            // updated it during previous partial commit(commit called from Pager).
+            // So it is the job of journal to record conditionally
+            try self.journal.record(page_number, original.*);
+        }
 
         // update cache with latest version
         const serialized_bytes: [muscle.PAGE_SIZE]u8 = try page_ptr.to_bytes();
@@ -339,7 +338,8 @@ const PagerCache = struct {
 const Journal = struct {
     io: IO,
     // unsaved entries
-    entries: std.BoundedArray(JournalEntry, MAX_DIRTY_COUNT_BEFORE_COMMIT),
+    entries: std.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES),
+    // this metadata does not contain newer stuff from entries. This is just an already saved stuff
     metadata: JournalMetadataPage,
 
     const JournalEntry = struct {
@@ -388,16 +388,13 @@ const Journal = struct {
 
         return Journal{
             .io = io,
-            .entries = try std.BoundedArray(JournalEntry, MAX_DIRTY_COUNT_BEFORE_COMMIT).init(0),
+            .entries = try std.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES).init(0),
             .metadata = metadata,
         };
     }
 
     const OriginalPage = struct { page_number: u32, page: [muscle.PAGE_SIZE]u8 };
     const BATCH_GET_SIZE = 16;
-    comptime {
-        assert(BATCH_GET_SIZE <= MAX_DIRTY_COUNT_BEFORE_COMMIT);
-    }
 
     fn get_first_newly_alloced_page(self: *const Journal) ?u32 {
         if (self.metadata.first_new_alloced_page == 0) {
@@ -412,8 +409,6 @@ const Journal = struct {
         }
     }
 
-    // return <= BATCH_GET_SIZE of original pages at a time
-    // this always reads from the disk
     pub fn batch_get_original_pages(self: *Journal, offset: u32) !struct {
         pages: [BATCH_GET_SIZE]OriginalPage,
         n_read: u32,
@@ -431,17 +426,42 @@ const Journal = struct {
             j += 1;
         }
 
+        if (j < BATCH_GET_SIZE) {
+            // total collected - pages from metadata
+            var already_collected_pages_from_entries = i - metadata.n_pages;
+
+            while (already_collected_pages_from_entries < self.entries.len and j < BATCH_GET_SIZE) {
+                pages[j] = .{
+                    .page_number = self.entries.buffer[already_collected_pages_from_entries].page_number,
+                    .page = self.entries.buffer[already_collected_pages_from_entries].entry,
+                };
+                j += 1;
+                already_collected_pages_from_entries += 1;
+            }
+        }
+
         return .{ .pages = pages, .n_read = j };
     }
 
     // record original state of the page
-    // record always called for non recorded pages
     fn record(self: *Journal, page_number: u32, entry: [muscle.PAGE_SIZE]u8) !void {
         // check if record already exists
         for (0..self.metadata.n_pages) |i| {
             if (self.metadata.pages[i] == page_number) {
                 return;
             }
+        }
+
+        // check if it exists inside entries
+        for (self.entries.constSlice()) |*e| {
+            if (e.page_number == page_number) {
+                return;
+            }
+        }
+
+        // if unsaved entries are full then persist first
+        if (self.entries.len == self.entries.capacity()) {
+            try self.persist();
         }
 
         try self.entries.append(JournalEntry{ .page_number = page_number, .entry = entry });
@@ -470,7 +490,6 @@ const Journal = struct {
 
         // reset
         self.entries.clear();
-        //print("Persisted journal.\n", .{});
     }
 
     // clear the journal file
@@ -478,6 +497,5 @@ const Journal = struct {
     fn clear(self: *Journal) !void {
         try self.io.truncate(null);
         self.entries.clear();
-        //std.debug.print("Cleared Journal.\n", .{});
     }
 };
