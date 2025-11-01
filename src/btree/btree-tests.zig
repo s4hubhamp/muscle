@@ -55,7 +55,7 @@ test "test tree operations on text primary key" {
                 },
                 .{
                     .column_name = "datetime",
-                    .value = .{ .INT = std.time.milliTimestamp() },
+                    .value = .{ .INT = @intCast(std.time.nanoTimestamp()) },
                 },
             } } };
         }
@@ -63,6 +63,7 @@ test "test tree operations on text primary key" {
 
     var delete_query: Query = Query{ .Delete = .{ .table_name = table_name, .key = undefined } };
     const select_metadata_query = Query{ .SelectTableMetadata = .{ .table_name = table_name } };
+    const select_query = Query{ .Select = .{ .table_name = table_name } };
     //const select_database_metadata_query = Query{ .SelectDatabaseMetadata = {} };
 
     // Case: Inserting inside root when root is a leaf node.
@@ -211,7 +212,6 @@ test "test tree operations on text primary key" {
     // 1.             (1)[AAAA..,           BBBBB..]
     // 2. (4)[AAAAAA..]         (5)[BBBBB..]        (7)[CCCCC..]
 
-    const select_query = Query{ .Select = .{ .table_name = table_name } };
     _ = try engine.execute_query(select_query);
 }
 

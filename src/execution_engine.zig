@@ -406,12 +406,145 @@ pub const ExecutionEngine = struct {
         tables: []muscle.Table,
         payload: UpdatePayload,
     ) !QueryResult {
-        _ = self;
-        _ = metadata_page;
-        _ = tables;
-        _ = payload;
+        var table: ?*muscle.Table = null;
+        for (tables) |*t| {
+            if (std.mem.eql(u8, t.name, payload.table_name)) {
+                table = t;
+            }
+        }
 
-        unreachable;
+        if (table == null) {
+            return error.TableNotFound;
+        }
+
+        const find_value = struct {
+            fn f(
+                column_name: []const u8,
+                values: []const InsertPayload.Value,
+            ) ?*const InsertPayload.Value {
+                for (values) |*val| {
+                    if (std.mem.eql(u8, val.column_name, column_name)) return val;
+                }
+
+                return null;
+            }
+        }.f;
+
+        const find_column = struct {
+            fn f(
+                columns: []const muscle.Column,
+                column_name: []const u8,
+            ) bool {
+                for (columns) |*col| {
+                    if (std.mem.eql(u8, col.name, column_name)) return true;
+                }
+
+                return false;
+            }
+        }.f;
+
+        // check for duplicate columns and whether columns even exists
+        if (payload.values.len > 1) {
+            for (payload.values, 0..) |*v1, i| {
+                if (!find_column(table.?.columns, v1.column_name))
+                    return error.ColumnDoesNotExist;
+                for (payload.values[i + 1 ..]) |*v2| {
+                    if (std.mem.eql(u8, v1.column_name, v2.column_name))
+                        return error.DuplicateColumns;
+                }
+            }
+        }
+
+        // If the passed payload size is greater than max content that a single page can hold
+        // this will overflow.
+        // so the max size of a single row for now is equal to `page.Page.CONTENT_MAX_SIZE`
+        var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
+        var primary_key_bytes: []const u8 = undefined;
+        var primary_key_type: muscle.DataType = undefined;
+
+        // for each column find value
+        for (table.?.columns, 0..) |*column, i| {
+            const value = find_value(column.name, payload.values);
+            var final_value_to_serialize: muscle.Value = .{ .NULL = {} };
+
+            // if value is not provided or it's provided and null
+            if (value == null or value.?.value == .NULL) {
+                if (column.auto_increment) {
+                    // increment value and serialize
+                    column.max_int_value += 1;
+                    final_value_to_serialize = muscle.Value{ .INT = column.max_int_value };
+                } else if (column.not_null) {
+                    return error.MissingValue;
+                } else {
+                    // use default value on column definition and serialize
+                    // @Todo
+                    unreachable;
+                }
+            } else {
+                final_value_to_serialize = value.?.value;
+
+                if (column.auto_increment) {
+                    // here we have auto_increment but we are still getting value
+                    // need to adjust max value if current value is bigger
+                    if (column.max_int_value < final_value_to_serialize.INT) {
+                        column.max_int_value = final_value_to_serialize.INT;
+                    }
+                }
+
+                // validate the type of value
+                switch (column.data_type) {
+                    .INT => if (final_value_to_serialize != .INT and final_value_to_serialize != .NULL)
+                        return error.TypeMismatch,
+                    .REAL => if (final_value_to_serialize != .REAL and final_value_to_serialize != .NULL)
+                        return error.TypeMismatch,
+                    .BOOL => if (final_value_to_serialize != .BOOL and final_value_to_serialize != .NULL)
+                        return error.TypeMismatch,
+                    .TEXT => |len| switch (final_value_to_serialize) {
+                        .TEXT => |text| {
+                            if (text.len > len) return error.TextTooLong;
+                        },
+                        .NULL => {},
+                        else => return error.TypeMismatch,
+                    },
+                    .BIN => |len| switch (final_value_to_serialize) {
+                        .BIN => |bin| {
+                            if (bin.len > len) return error.BinaryTooLarge;
+                        },
+                        .NULL => {},
+                        else => return error.TypeMismatch,
+                    },
+                }
+            }
+
+            serde.serailize_value(&buffer, final_value_to_serialize) catch {
+                return error.RowTooBig;
+            };
+
+            // first column is always the primary key
+            if (i == 0) {
+                primary_key_bytes = buffer.constSlice();
+                primary_key_type = column.data_type;
+                if (primary_key_bytes.len > page.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
+                    return error.KeyTooLong;
+                }
+            }
+        }
+
+        // Important to initiate BTree everytime OR have correct reference to metadata_page every time
+        var btree = BTree.init(
+            &self.pager,
+            metadata_page,
+            table.?.root,
+            primary_key_type,
+            self.allocator,
+        );
+        try btree.update(primary_key_bytes, buffer.constSlice());
+
+        // update metadata
+        try metadata_page.set_tables(self.allocator, tables);
+        try self.pager.update_page(0, metadata_page);
+
+        return QueryResult.success_result(.{ .Update = .{ .rows_affected = 1 } });
     }
 
     fn delete(
@@ -712,8 +845,6 @@ const ExecuteQueryResults = union(enum) {
 pub const QueryResult = struct {
     status: QueryStatus,
     data: QueryResultData,
-    // @todo
-    rows_affected: ?u32 = null,
 
     pub const QueryStatus = enum {
         Success,
@@ -736,7 +867,7 @@ pub const QueryResult = struct {
         // DML Operations
         //
         //Insert: InsertResult,
-        //Update: UpdateResult,
+        Update: UpdateResult,
         //Delete: DeleteResult,
 
         //
@@ -824,6 +955,10 @@ pub const Query = union(enum) {
     Delete: DeletePayload,
     SelectTableMetadata: SelectPayload,
     SelectDatabaseMetadata: void,
+};
+
+pub const UpdateResult = struct {
+    rows_affected: u32,
 };
 
 pub const SelectDatabaseMetadataResult = struct {
