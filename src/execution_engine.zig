@@ -1,5 +1,7 @@
 const std = @import("std");
 const muscle = @import("muscle");
+
+const errors = @import("./errors.zig");
 const Pager = @import("./btree/pager.zig").Pager;
 const page = @import("./btree/page.zig");
 const BTree = @import("./btree/btree.zig").BTree;
@@ -28,16 +30,9 @@ pub const ExecutionEngine = struct {
         self.pager.deinit();
     }
 
-    const ExecuteQueryResults = union(enum) {
-        SelectTableMetadataQueryResult: SelectTableMetadataQueryResult,
-        SelectDatabaseMetadataResult: SelectDatabaseMetadataResult,
-    };
-    pub fn execute_query(self: *ExecutionEngine, query: Query) !?ExecuteQueryResults {
-        var results: ?ExecuteQueryResults = null;
+    pub fn execute_query(self: *ExecutionEngine, query: Query) !QueryResult {
         var is_update_query = false;
-        // for update queries, they can fail after updating some records
-        const rollback_partially_done_updates = false;
-        var client_err: ?anyerror = null;
+        var should_rollback = false;
 
         //
         // The details that almost all the queries need are prepared here.
@@ -54,84 +49,90 @@ pub const ExecutionEngine = struct {
             parsed.deinit();
         }
 
-        switch (query) {
+        const results = switch (query) {
             Query.CreateTable => |payload| {
                 is_update_query = true;
-                try self.create_table(&metadata_page, tables, payload);
-                //catch |err| {
-                //    client_err = err;
-                //    rollback_partially_done_updates = true;
-                //};
+                return self.create_table(&metadata_page, tables, payload) catch |err| {
+                    should_rollback = true;
+                    return try maybe_create_client_error_response(err);
+                };
             },
             Query.DropTable => |payload| {
                 is_update_query = true;
-                try self.drop_table(&metadata_page, tables, payload);
+                return self.drop_table(&metadata_page, tables, payload) catch |err| {
+                    should_rollback = true;
+                    return try maybe_create_client_error_response(err);
+                };
             },
             Query.Insert => |payload| {
                 is_update_query = true;
-                try self.insert(&metadata_page, tables, payload);
-                //catch |err| {
-                //    client_err = err;
-                //    rollback_partially_done_updates = true;
-                //};
+                return self.insert(&metadata_page, tables, payload) catch |err| {
+                    should_rollback = true;
+                    return try maybe_create_client_error_response(err);
+                };
             },
             Query.Update => |payload| {
                 is_update_query = true;
-                try self.update(&metadata_page, tables, payload);
-                //catch |err| {
-                //    client_err = err;
-                //    rollback_partially_done_updates = true;
-                //};
+                return self.update(&metadata_page, tables, payload) catch |err| {
+                    should_rollback = true;
+                    return try maybe_create_client_error_response(err);
+                };
             },
             Query.Delete => |payload| {
                 is_update_query = true;
-                try self.delete(&metadata_page, tables, payload);
-                //catch |err| {
-                //    client_err = err;
-                //    rollback_partially_done_updates = true;
-                //};
+                return self.delete(&metadata_page, tables, payload) catch |err| {
+                    should_rollback = true;
+                    return try maybe_create_client_error_response(err);
+                };
             },
             Query.Select => |payload| {
-                try self.select(&metadata_page, tables, payload);
-                //catch |err| {
-                //    client_err = err;
-                //};
+                return self.select(&metadata_page, tables, payload) catch |err| {
+                    return try maybe_create_client_error_response(err);
+                };
             },
             Query.SelectTableMetadata => |payload| {
-                results = try self.select_table_metadata(&metadata_page, tables, payload);
-                //results = self.select_table_metadata(&metadata_page, tables, payload) catch |err| {
-                //    client_err = err;
-                //    return null;
-                //};
+                return self.select_table_metadata(&metadata_page, tables, payload) catch |err| {
+                    return try maybe_create_client_error_response(err);
+                };
             },
             Query.SelectDatabaseMetadata => {
-                results = try self.select_database_metadata(&metadata_page);
-                //results = self.select_database_metadata(&metadata_page) catch |err| {
-                //    client_err = err;
-                //    return null;
-                //};
+                return self.select_database_metadata(&metadata_page) catch |err| {
+                    return try maybe_create_client_error_response(err);
+                };
             },
             else => @panic("not implemented"),
-        }
+        };
 
-        if (rollback_partially_done_updates) {
-            print("Processing failed before final commit. Calling Rollback.\n", .{});
-            try self.pager.rollback();
+        // Handle rollback/commit logic
+        if (should_rollback) {
+            print("Processing failed. Calling Rollback.\n", .{});
+            self.pager.rollback() catch |rollback_err| {
+                // If rollback fails, this is a critical system error
+                print("CRITICAL FAILURE: Rollback failed: {any}\n", .{rollback_err});
+                //@panic("Database in inconsistent state - rollback failed");
+                return rollback_err;
+            };
         } else if (is_update_query) {
-            // at this point we may've done partial updates and they are succeeded. But
-            // if we can still fail to do last commit.
-            self.pager.commit(true) catch |err| {
-                client_err = err;
-                // journal might be in bad state but if it's not rollback will succeed
-                // or else we will crash.
-                try self.pager.rollback();
+            self.pager.commit(true) catch |commit_err| {
+                print("CRITICAL FAILURE: commit failed. {any}\n", .{commit_err});
+                return commit_err;
             };
         }
 
-        if (client_err != null)
-            print("client_err: {any}\n", .{client_err});
-
         return results;
+    }
+
+    // gracefully resolves client errors and creates error QueryResult
+    fn maybe_create_client_error_response(err: anyerror) !QueryResult {
+        const classification = errors.classify_error(err);
+        switch (classification) {
+            .Client => {
+                return QueryResult.error_result(err, @errorName(err));
+            },
+            .System => {
+                return err;
+            },
+        }
     }
 
     fn create_table(
@@ -139,7 +140,7 @@ pub const ExecutionEngine = struct {
         metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: CreateTablePayload,
-    ) !void {
+    ) !QueryResult {
         var tables_list = try std.ArrayList(muscle.Table).initCapacity(self.allocator, tables.len + 1);
         var columns = try std.ArrayList(muscle.Column).initCapacity(self.allocator, payload.columns.len + 1);
         defer {
@@ -234,6 +235,8 @@ pub const ExecutionEngine = struct {
         try metadata.set_tables(self.allocator, tables_list.items[0..]);
         // update metadata
         try self.pager.update_page(0, metadata);
+
+        return QueryResult.success_result(.{ .__void = {} });
     }
 
     fn drop_table(
@@ -241,11 +244,13 @@ pub const ExecutionEngine = struct {
         metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: DropTablePayload,
-    ) !void {
+    ) !QueryResult {
         _ = self;
         _ = metadata;
         _ = tables;
         _ = payload;
+
+        unreachable;
     }
 
     fn insert(
@@ -253,7 +258,7 @@ pub const ExecutionEngine = struct {
         metadata_page: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: InsertPayload,
-    ) !void {
+    ) !QueryResult {
         var table: ?*muscle.Table = null;
         for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -391,6 +396,8 @@ pub const ExecutionEngine = struct {
         // update metadata
         try metadata_page.set_tables(self.allocator, tables);
         try self.pager.update_page(0, metadata_page);
+
+        return QueryResult.success_result(.{ .__void = {} });
     }
 
     fn update(
@@ -398,7 +405,7 @@ pub const ExecutionEngine = struct {
         metadata_page: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: UpdatePayload,
-    ) !void {
+    ) !QueryResult {
         _ = self;
         _ = metadata_page;
         _ = tables;
@@ -412,7 +419,7 @@ pub const ExecutionEngine = struct {
         metadata_page: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: DeletePayload,
-    ) !void {
+    ) !QueryResult {
         var table: ?*muscle.Table = null;
         for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -444,6 +451,8 @@ pub const ExecutionEngine = struct {
 
         // update metadata
         try self.pager.update_page(0, metadata_page);
+
+        return QueryResult.success_result(.{ .__void = {} });
     }
 
     fn select(
@@ -451,7 +460,7 @@ pub const ExecutionEngine = struct {
         metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: SelectPayload,
-    ) !void {
+    ) !QueryResult {
         var table: ?muscle.Table = null;
         for (tables) |t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -545,6 +554,8 @@ pub const ExecutionEngine = struct {
         });
 
         std.debug.print("\n\n*****************************************************************", .{});
+
+        return QueryResult.success_result(.{ .__void = {} });
     }
 
     fn select_table_metadata(
@@ -552,7 +563,7 @@ pub const ExecutionEngine = struct {
         metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
         payload: SelectPayload,
-    ) !ExecuteQueryResults {
+    ) !QueryResult {
         _ = metadata;
         var table: ?muscle.Table = null;
         for (tables) |t| {
@@ -568,7 +579,7 @@ pub const ExecutionEngine = struct {
         // use BFS and insert all the page info inside the hash table
         // also record total cells
 
-        var result = SelectTableMetadataQueryResult{
+        var result = SelectTableMetadataResult{
             .root_page = table.?.root,
             .btree_height = 0,
             .btree_leaf_cells = 0,
@@ -576,7 +587,7 @@ pub const ExecutionEngine = struct {
             .btree_leaf_pages = 0,
             .btree_internal_pages = 0,
             .table_columns = try std.ArrayList(muscle.Column).initCapacity(self.allocator, table.?.columns.len),
-            .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataQueryResult.DBPageMetadata).init(self.allocator),
+            .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata).init(self.allocator),
         };
 
         // copy columns
@@ -589,19 +600,19 @@ pub const ExecutionEngine = struct {
 
         const collect_page_info = struct {
             fn f(
-                map: *std.AutoHashMap(muscle.PageNumber, SelectTableMetadataQueryResult.DBPageMetadata),
+                map: *std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata),
                 _page_number: muscle.PageNumber,
                 _page: page.Page,
                 _primary_key_data_type: muscle.DataType,
             ) !void {
-                var page_info = SelectTableMetadataQueryResult.DBPageMetadata{
+                var page_info = SelectTableMetadataResult.DBPageMetadata{
                     .page = _page_number,
                     .right_child = _page.right_child,
                     .content_size = _page.content_size,
                     .free_space = _page.free_space(),
                     .left = _page.left,
                     .right = _page.right,
-                    .cells = std.ArrayList(SelectTableMetadataQueryResult.DBPageCellMetadata).init(map.allocator),
+                    .cells = std.ArrayList(SelectTableMetadataResult.DBPageCellMetadata).init(map.allocator),
                 };
 
                 for (0.._page.num_slots) |slot| {
@@ -646,13 +657,13 @@ pub const ExecutionEngine = struct {
             }
         }
 
-        return ExecuteQueryResults{ .SelectTableMetadataQueryResult = result };
+        return QueryResult.success_result(.{ .SelectTableMetadata = result });
     }
 
     fn select_database_metadata(
         self: *ExecutionEngine,
         metadata: *page.DBMetadataPage,
-    ) !ExecuteQueryResults {
+    ) !QueryResult {
         var free_pages = try std.BoundedArray(muscle.PageNumber, 128).init(0);
 
         if (metadata.first_free_page > 0) {
@@ -683,12 +694,89 @@ pub const ExecutionEngine = struct {
 
         assert(metadata.free_pages == free_pages.len);
 
-        return ExecuteQueryResults{ .SelectDatabaseMetadataResult = SelectDatabaseMetadataResult{
+        return QueryResult.success_result(.{ .SelectDatabaseMetadata = SelectDatabaseMetadataResult{
             .n_total_pages = metadata.total_pages,
             .n_free_pages = metadata.free_pages,
             .first_free_page = metadata.first_free_page,
             .free_pages = free_pages,
-        } };
+        } });
+    }
+};
+
+// @todo normalize this. Also have a result type for all queries instead of returning null
+const ExecuteQueryResults = union(enum) {
+    SelectTableMetadataResult: SelectTableMetadataResult,
+    SelectDatabaseMetadataResult: SelectDatabaseMetadataResult,
+};
+
+pub const QueryResult = struct {
+    status: QueryStatus,
+    data: QueryResultData,
+    // @todo
+    rows_affected: ?u32 = null,
+
+    pub const QueryStatus = enum {
+        Success,
+        Error,
+    };
+
+    pub const ErrorResult = struct {
+        error_code: anyerror,
+        error_message: []const u8,
+    };
+
+    pub const QueryResultData = union(enum) {
+        //
+        // DDL Operations
+        //
+        //CreateTable: CreateTableResult,
+        //DropTable: DropTableResult,
+
+        //
+        // DML Operations
+        //
+        //Insert: InsertResult,
+        //Update: UpdateResult,
+        //Delete: DeleteResult,
+
+        //
+        // Query Operations
+        //
+        // Select: SelectResult,
+        SelectTableMetadata: SelectTableMetadataResult,
+        SelectDatabaseMetadata: SelectDatabaseMetadataResult,
+
+        // Error case
+        Error: ErrorResult,
+
+        // Temp void result type
+        __void: void,
+    };
+
+    pub fn success_result(data: QueryResultData) QueryResult {
+        return QueryResult{
+            .status = .Success,
+            .data = data,
+        };
+    }
+
+    pub fn error_result(err: anyerror, message: []const u8) QueryResult {
+        return QueryResult{
+            .status = .Error,
+            .data = .{ .Error = ErrorResult{ .error_code = err, .error_message = message } },
+        };
+    }
+
+    pub fn deinit(self: *QueryResult, allocator: std.mem.Allocator) void {
+        switch (self.data) {
+            .SelectTableMetadata => |*result| result.deinit(),
+            .Select => |*result| result.deinit(allocator),
+            else => {},
+        }
+    }
+
+    pub fn is_error_result(self: *const QueryResult) bool {
+        return self.status == .Error;
     }
 };
 
@@ -745,7 +833,7 @@ pub const SelectDatabaseMetadataResult = struct {
     free_pages: std.BoundedArray(muscle.PageNumber, 128),
 };
 
-pub const SelectTableMetadataQueryResult = struct {
+pub const SelectTableMetadataResult = struct {
     root_page: muscle.PageNumber,
     table_columns: std.ArrayList(muscle.Column),
     btree_height: u16,
@@ -774,7 +862,7 @@ pub const SelectTableMetadataQueryResult = struct {
         cells: std.ArrayList(DBPageCellMetadata),
     };
 
-    pub fn print(self: *const SelectTableMetadataQueryResult) void {
+    pub fn print(self: *const SelectTableMetadataResult) void {
         std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%     Metadata    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
 
         std.debug.print("Root Page:             {}\n", .{self.root_page});
@@ -787,7 +875,7 @@ pub const SelectTableMetadataQueryResult = struct {
         std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   End Metadata  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
     }
 
-    pub fn deinit(self: *SelectTableMetadataQueryResult) void {
+    pub fn deinit(self: *SelectTableMetadataResult) void {
         var allocator = self.pages.allocator;
         var iter = self.pages.valueIterator();
         while (iter.next()) |_page| {

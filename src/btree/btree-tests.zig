@@ -8,7 +8,7 @@ const FreePage = @import("./page.zig").FreePage;
 const DBMetadataPage = @import("./page.zig").DBMetadataPage;
 
 const assert = std.debug.assert;
-const SelectTableMetadataQueryResult = execution.SelectTableMetadataQueryResult;
+const SelectTableMetadataResult = execution.SelectTableMetadataResult;
 const Query = execution.Query;
 
 test "test tree operations on text primary key" {
@@ -68,19 +68,19 @@ test "test tree operations on text primary key" {
     // Case: Inserting inside root when root is a leaf node.
     _ = try engine.execute_query(get_insert_query("a"));
     var metadata = try engine.execute_query(select_metadata_query);
-    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 1);
-    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 1);
-    metadata.?.SelectTableMetadataQueryResult.deinit();
+    try validate_btree(&metadata.data.SelectTableMetadata);
+    assert(metadata.data.SelectTableMetadata.btree_height == 1);
+    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 1);
+    metadata.data.SelectTableMetadata.deinit();
 
     // Case: Deleting when root is leaf node
     delete_query.Delete.key = .{ .TEXT = "a" };
     _ = try engine.execute_query(delete_query);
     metadata = try engine.execute_query(select_metadata_query);
-    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 1);
-    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 0);
-    metadata.?.SelectTableMetadataQueryResult.deinit();
+    try validate_btree(&metadata.data.SelectTableMetadata);
+    assert(metadata.data.SelectTableMetadata.btree_height == 1);
+    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 0);
+    metadata.data.SelectTableMetadata.deinit();
 
     // Case: Splitting root node
     {
@@ -89,10 +89,10 @@ test "test tree operations on text primary key" {
         for (&txt) |*char| char.* = 66;
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        metadata.?.SelectTableMetadataQueryResult.btree_height = 2;
-        metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells = 2;
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        metadata.data.SelectTableMetadata.btree_height = 2;
+        metadata.data.SelectTableMetadata.btree_leaf_cells = 2;
+        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -105,10 +105,10 @@ test "test tree operations on text primary key" {
         delete_query.Delete.key = .{ .TEXT = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 1);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 1);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        assert(metadata.data.SelectTableMetadata.btree_height == 1);
+        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 1);
+        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -121,10 +121,10 @@ test "test tree operations on text primary key" {
         for (&txt) |*char| char.* = 67;
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        assert(metadata.data.SelectTableMetadata.btree_height == 2);
+        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -136,10 +136,10 @@ test "test tree operations on text primary key" {
         var txt = [_]u8{68} ** 2023;
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 3);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 4);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        assert(metadata.data.SelectTableMetadata.btree_height == 3);
+        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 4);
+        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -153,58 +153,58 @@ test "test tree operations on text primary key" {
         delete_query.Delete.key = .{ .TEXT = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        assert(metadata.data.SelectTableMetadata.btree_height == 2);
+        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        metadata.data.SelectTableMetadata.deinit();
 
         // insert B back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        metadata.data.SelectTableMetadata.deinit();
 
         // Delete A
         for (&txt) |*char| char.* = 65;
         delete_query.Delete.key = .{ .TEXT = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        assert(metadata.data.SelectTableMetadata.btree_height == 2);
+        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        metadata.data.SelectTableMetadata.deinit();
 
         // insert A back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        metadata.data.SelectTableMetadata.deinit();
 
         // Delete C
         for (&txt) |*char| char.* = 67;
         delete_query.Delete.key = .{ .TEXT = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        assert(metadata.data.SelectTableMetadata.btree_height == 2);
+        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        metadata.data.SelectTableMetadata.deinit();
 
         // insert C back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        metadata.data.SelectTableMetadata.deinit();
 
         // Delete D
         for (&txt) |*char| char.* = 68;
         delete_query.Delete.key = .{ .TEXT = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-        assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
-        metadata.?.SelectTableMetadataQueryResult.deinit();
+        try validate_btree(&metadata.data.SelectTableMetadata);
+        assert(metadata.data.SelectTableMetadata.btree_height == 2);
+        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -215,7 +215,7 @@ test "test tree operations on text primary key" {
     _ = try engine.execute_query(select_query);
 }
 
-fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
+fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
     const t = std.time.milliTimestamp();
 
     var allocator = metadata.pages.allocator;
@@ -409,21 +409,21 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    // Case: Inserting inside root when root is a leaf node.
 //    _ = try engine.execute_query(get_insert_query(1, &values_with_rowid));
 //    var metadata = try engine.execute_query(select_metadata_query);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 1);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 1);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    assert(metadata.data.SelectTableMetadata.btree_height == 1);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 1);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Case: Deleting when root is a leaf node.
 //    delete_query.Delete.key = .{ .INT = 1 };
 //    _ = try engine.execute_query(delete_query);
 
 //    metadata = try engine.execute_query(select_metadata_query);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 1);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 0);
-//    assert(metadata.?.SelectTableMetadataQueryResult.table_columns.items[0].max_int_value == 1);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    assert(metadata.data.SelectTableMetadata.btree_height == 1);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 0);
+//    assert(metadata.data.SelectTableMetadata.table_columns.items[0].max_int_value == 1);
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Case: Splitting of root when root is a leaf node.
 //    _ = try engine.execute_query(get_insert_query(2, &values_with_rowid));
@@ -431,11 +431,11 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    _ = try engine.execute_query(get_insert_query(4, &values_with_rowid));
 //    _ = try engine.execute_query(get_insert_query(5, &values_with_rowid));
 //    metadata = try engine.execute_query(select_metadata_query);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 4);
-//    assert(metadata.?.SelectTableMetadataQueryResult.table_columns.items[0].max_int_value == 5);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    assert(metadata.data.SelectTableMetadata.btree_height == 2);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 4);
+//    assert(metadata.data.SelectTableMetadata.table_columns.items[0].max_int_value == 5);
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Tree state, 3 is inside root and first leaf has 2, 3 and second leaf has 4, 5
 //    // 1:       [3]
@@ -444,10 +444,10 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    // Case: Distributing the leaf node, Creating new leaf
 //    _ = try engine.execute_query(get_insert_query(null, &values_with_rowid));
 //    metadata = try engine.execute_query(select_metadata_query);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 5);
-//    assert(metadata.?.SelectTableMetadataQueryResult.table_columns.items[0].max_int_value == 6);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 5);
+//    assert(metadata.data.SelectTableMetadata.table_columns.items[0].max_int_value == 6);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Tree state
 //    // 1.         (1)[ 3,       5]
@@ -459,11 +459,11 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    delete_query.Delete.key = .{ .INT = 6 };
 //    _ = try engine.execute_query(delete_query);
 //    metadata = try engine.execute_query(select_metadata_query);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 4);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_pages == 2);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_internal_cells == 1);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 4);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_pages == 2);
+//    assert(metadata.data.SelectTableMetadata.btree_internal_cells == 1);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Tree state
 //    // 1.          (1)[3]
@@ -483,12 +483,12 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    delete_query.Delete.key = .{ .INT = 3 };
 //    _ = try engine.execute_query(delete_query);
 //    metadata = try engine.execute_query(select_metadata_query);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 1);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 2);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_internal_pages == 0);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_pages == 1);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    assert(metadata.data.SelectTableMetadata.btree_height == 1);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 2);
+//    assert(metadata.data.SelectTableMetadata.btree_internal_pages == 0);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_pages == 1);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Tree state
 //    // 1.      (1)[4, 5]
@@ -504,12 +504,12 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    _ = try engine.execute_query(get_insert_query(2, &values_with_rowid));
 //    _ = try engine.execute_query(get_insert_query(3, &values_with_rowid));
 //    metadata = try engine.execute_query(select_metadata_query);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 5);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_internal_pages == 1);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_pages == 3);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    assert(metadata.data.SelectTableMetadata.btree_height == 2);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 5);
+//    assert(metadata.data.SelectTableMetadata.btree_internal_pages == 1);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_pages == 3);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Tree state
 //    // 1.      (1)[2,     4]
@@ -526,12 +526,12 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    delete_query.Delete.key = .{ .INT = 4 };
 //    _ = try engine.execute_query(delete_query);
 //    metadata = try engine.execute_query(select_metadata_query);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_height == 2);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_cells == 3);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_internal_pages == 1);
-//    assert(metadata.?.SelectTableMetadataQueryResult.btree_leaf_pages == 2);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    assert(metadata.data.SelectTableMetadata.btree_height == 2);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+//    assert(metadata.data.SelectTableMetadata.btree_internal_pages == 1);
+//    assert(metadata.data.SelectTableMetadata.btree_leaf_pages == 2);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Tree state
 //    // 1.      (1)[2]
@@ -552,8 +552,8 @@ fn validate_btree(metadata: *const SelectTableMetadataQueryResult) !void {
 //    _ = try engine.execute_query(get_insert_query(null, &values_with_rowid));
 
 //    metadata = try engine.execute_query(select_metadata_query);
-//    try validate_btree(&metadata.?.SelectTableMetadataQueryResult);
-//    metadata.?.SelectTableMetadataQueryResult.deinit();
+//    try validate_btree(&.data.SelectTableMetadata.?.SelectTableMetadataResult);
+//    metadata.data.SelectTableMetadata.deinit();
 
 //    // Tree state
 //    // 1.         (1)[2]
