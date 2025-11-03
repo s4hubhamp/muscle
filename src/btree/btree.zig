@@ -179,7 +179,7 @@ pub const BTree = struct {
                 );
             },
             .go_down => |_| {
-                return error.NotFound;
+                return error.KeyNotFound;
             },
         }
     }
@@ -663,15 +663,22 @@ pub const BTree = struct {
             }
 
             var last_sibling = &siblings.slice()[siblings.len - 1];
+            const last_siblings_right_neighbor_page = last_sibling.page.right;
+            var last_siblings_right_neighbor = try self.pager.get_page(
+                page.Page,
+                last_siblings_right_neighbor_page,
+            );
 
             // update pointers
             new_page.right = last_sibling.page.right;
             last_sibling.page.right = new_page_number;
             new_page.left = last_sibling.page_number;
+            last_siblings_right_neighbor.left = new_page_number;
 
-            // save both last sibling and new page
+            // save
             try self.pager.update_page(last_sibling.page_number, &last_sibling.page);
             try self.pager.update_page(new_page_number, &new_page);
+            try self.pager.update_page(last_siblings_right_neighbor_page, &last_siblings_right_neighbor);
 
             change_info.newly_created_page = new_page_number;
         } else {
@@ -1016,15 +1023,22 @@ pub const BTree = struct {
             }
 
             var last_sibling = &siblings.slice()[siblings.len - 1];
+            const last_siblings_right_neighbor_page = last_sibling.page.right;
+            var last_siblings_right_neighbor = try self.pager.get_page(
+                page.Page,
+                last_siblings_right_neighbor_page,
+            );
 
             // update pointers
-            new_page.right = last_sibling.page.right;
+            new_page.right = last_siblings_right_neighbor_page;
             last_sibling.page.right = new_page_number;
             new_page.left = last_sibling.page_number;
+            last_siblings_right_neighbor.left = new_page_number;
 
             // save both last sibling and new page
             try self.pager.update_page(last_sibling.page_number, &last_sibling.page);
             try self.pager.update_page(new_page_number, &new_page);
+            try self.pager.update_page(last_siblings_right_neighbor_page, &last_siblings_right_neighbor);
 
             next_change_info.newly_created_page = new_page_number;
         }

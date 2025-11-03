@@ -397,7 +397,7 @@ pub const ExecutionEngine = struct {
         try metadata_page.set_tables(self.allocator, tables);
         try self.pager.update_page(0, metadata_page);
 
-        return QueryResult.success_result(.{ .__void = {} });
+        return QueryResult.success_result(.{ .Insert = .{ .rows_created = 1 } });
     }
 
     fn update(
@@ -686,7 +686,7 @@ pub const ExecutionEngine = struct {
             metadata.total_pages, metadata.free_pages, metadata.first_free_page,
         });
 
-        std.debug.print("\n\n*****************************************************************", .{});
+        std.debug.print("\n\n*****************************************************************\n\n", .{});
 
         return QueryResult.success_result(.{ .__void = {} });
     }
@@ -866,7 +866,7 @@ pub const QueryResult = struct {
         //
         // DML Operations
         //
-        //Insert: InsertResult,
+        Insert: InsertResult,
         Update: UpdateResult,
         //Delete: DeleteResult,
 
@@ -955,6 +955,10 @@ pub const Query = union(enum) {
     Delete: DeletePayload,
     SelectTableMetadata: SelectPayload,
     SelectDatabaseMetadata: void,
+};
+
+pub const InsertResult = struct {
+    rows_created: u32,
 };
 
 pub const UpdateResult = struct {

@@ -6,6 +6,7 @@ pub const ClientError = error{
     ColumnDoesNotExist,
     DuplicateColumnName,
     DuplicateColumns,
+    DuplicateKey,
     KeyNotFound,
 
     // Data validation errors
@@ -53,6 +54,8 @@ pub fn classify_error(err: anyerror) ErrorClassification {
         error.ColumnDoesNotExist,
         error.DuplicateColumnName,
         error.DuplicateColumns,
+        error.DuplicateKey,
+        error.KeyNotFound,
         error.TypeMismatch,
         error.MissingValue,
         error.TextTooLong,
@@ -66,18 +69,6 @@ pub fn classify_error(err: anyerror) ErrorClassification {
         error.UniqueConstraintViolation,
         => .Client,
 
-        // System errors - should crash or require special handling
-        error.OutOfMemory,
-        error.FileNotFound,
-        error.AccessDenied,
-        error.DiskFull,
-        error.CorruptedData,
-        error.InvalidPageType,
-        error.InternalConsistencyError,
-        error.UnexpectedState,
-        => .System,
-
-        // Default to system error for unknown errors
         else => .System,
     };
 }
