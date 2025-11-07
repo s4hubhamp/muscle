@@ -229,6 +229,8 @@ pub const Page = extern struct {
     }
 
     pub fn update(self: *Page, cell: Cell, slot_index: SlotArrayIndex) OverflowError!void {
+        assert(slot_index < self.num_slots);
+
         const old = self.cell_at_slot(slot_index);
         if (cell.size > old.size and self.free_space() < cell.size - old.size) {
             return error.Overflow;
@@ -239,7 +241,12 @@ pub const Page = extern struct {
 
         // after degramentation, self.last_used_offset should point to the cell we are updating.
         // update slot array
-        std.mem.writeInt(SlotArrayEntry, self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)], self.last_used_offset, .little);
+        std.mem.writeInt(
+            SlotArrayEntry,
+            self.content[slot_index * @sizeOf(SlotArrayEntry) ..][0..@sizeOf(SlotArrayEntry)],
+            self.last_used_offset,
+            .little,
+        );
         self.put_cell_at_offset(cell, self.last_used_offset);
         self.content_size -= old.size;
         self.content_size += @as(u16, @intCast(cell.size));
@@ -441,7 +448,7 @@ pub const Cell = struct {
         );
 
         //  place the cell content
-        @memcpy(slice[6..slice.len], self.content);
+        @memcpy(slice[6..][0..self.content.len], self.content);
     }
 
     pub fn from_bytes(slice: []const u8) Cell {
@@ -462,7 +469,7 @@ pub const Cell = struct {
         return Cell{
             .size = cell_size,
             .left_child = left_child,
-            .content = slice[HEADER_SIZE..][0 .. cell_size - HEADER_SIZE],
+            .content = slice[HEADER_SIZE..][0..(cell_size - HEADER_SIZE)],
         };
     }
 

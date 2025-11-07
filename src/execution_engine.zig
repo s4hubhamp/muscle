@@ -391,6 +391,8 @@ pub const ExecutionEngine = struct {
             primary_key_type,
             self.allocator,
         );
+        defer btree.deinit();
+
         try btree.insert(primary_key_bytes, buffer.constSlice());
 
         // update metadata
@@ -538,6 +540,8 @@ pub const ExecutionEngine = struct {
             primary_key_type,
             self.allocator,
         );
+        defer btree.deinit();
+
         try btree.update(primary_key_bytes, buffer.constSlice());
 
         // update metadata
@@ -580,6 +584,8 @@ pub const ExecutionEngine = struct {
             table.?.columns[0].data_type,
             self.allocator,
         );
+        defer btree.deinit();
+
         try btree.delete(buffer.constSlice());
 
         // update metadata

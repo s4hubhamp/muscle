@@ -2,6 +2,7 @@ const std = @import("std");
 const muscle = @import("muscle");
 const Pager = @import("./pager.zig").Pager;
 const page = @import("./page.zig");
+const serde = @import("../serialize_deserialize.zig");
 
 const assert = std.debug.assert;
 
@@ -16,6 +17,9 @@ pub const BTree = struct {
     // data type of *key* used inside the btree
     primary_key_data_type: muscle.DataType,
 
+    //
+    arena: std.heap.ArenaAllocator,
+
     pub fn init(
         pager: *Pager,
         metadata: *page.DBMetadataPage,
@@ -29,11 +33,12 @@ pub const BTree = struct {
             .allocator = allocator,
             .root_page_number = root_page_number,
             .primary_key_data_type = primary_key_data_type,
+            .arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
-    pub fn deinit(self: *BTree) !void {
-        _ = self;
+    pub fn deinit(self: *BTree) void {
+        self.arena.deinit();
     }
 
     const PathDetail = struct {
@@ -222,6 +227,8 @@ pub const BTree = struct {
         const is_leaf = target_page.is_leaf();
         const is_root = parent_page_number == null;
 
+        var next_change_info: ?TreeChangeInfo = null;
+
         if (is_root) {
             if (is_leaf) {
                 var save = true;
@@ -269,7 +276,7 @@ pub const BTree = struct {
                     }
 
                     // persist
-                    try self.pager.update_page(target_page_number, target_page);
+                    try self.pager.update_page(target_page_number, &target_page);
                 } else {
                     try self.split_internal_root(
                         &target_page,
@@ -281,8 +288,6 @@ pub const BTree = struct {
 
             return;
         }
-
-        var next_change_info: ?TreeChangeInfo = null;
 
         if (is_leaf) {
             var save = true;
@@ -428,9 +433,51 @@ pub const BTree = struct {
         try self.pager.free(self.metadata, page_number);
     }
 
-    fn get_divider_key(self: *const BTree, node: *const page.Page) []const u8 {
-        const cell = node.cell_at_slot(node.num_slots - 1);
-        return cell.get_keys_slice(!node.is_leaf(), self.primary_key_data_type);
+    //@Perf Benchmark the cache hits and misses.
+    fn get_divider_key(
+        self: *BTree,
+        node: *const page.Page,
+    ) ![]const u8 {
+        //
+        // Divider key is the key which is less than or equal to all the keys from subtree attached to node.
+        //
+        // Logic has to be different for different types of pages.
+        // When node is a leaf node then it will be last key Otherwise we need to traverse the subtree towards right
+        // reach leaf and return collect last cell from there.
+        //
+        // @Perf
+        // Note: When someone ask for divider key on some page all needed updates are already done to subtree
+        // linked to that page so we can cache the keys by page number for easy retrieval.
+        //
+
+        var slice: []const u8 = undefined;
+
+        if (node.is_leaf()) {
+            const cell = node.cell_at_slot(node.num_slots - 1);
+            slice = cell.get_keys_slice(!node.is_leaf(), self.primary_key_data_type);
+        } else {
+            // traverse right until we reach leaf or we find inside the cache
+            var curr = node.right_child;
+
+            while (true) {
+                assert(curr > 0);
+
+                var curr_page = try self.pager.get_page(page.Page, curr);
+
+                if (curr_page.is_leaf()) {
+                    const cell = curr_page.cell_at_slot(curr_page.num_slots - 1);
+                    slice = cell.get_keys_slice(!curr_page.is_leaf(), self.primary_key_data_type);
+                    break;
+                }
+
+                // traverse towards right
+                curr = curr_page.right_child;
+            }
+        }
+
+        // @important: return pointer to the heap memory
+        slice = try self.arena.allocator().dupe(u8, slice);
+        return slice;
     }
 
     // this updates the node assuming the needed space is available
@@ -460,7 +507,10 @@ pub const BTree = struct {
                 }
 
                 const sibling_node = try self.pager.get_page(page.Page, info.sibling_page_number);
-                const divider_cell = page.Cell.init(self.get_divider_key(&sibling_node), info.sibling_page_number);
+                const divider_cell = page.Cell.init(
+                    try self.get_divider_key(&sibling_node),
+                    info.sibling_page_number,
+                );
 
                 try node.update(divider_cell, info.sibling_slot_index);
             }
@@ -477,13 +527,17 @@ pub const BTree = struct {
                 assert(last_sibling_info.sibling_page_number == node.right_child);
 
                 const curr_last_node = try self.pager.get_page(page.Page, node.right_child);
-                divider_cell = page.Cell.init(self.get_divider_key(&curr_last_node), node.right_child);
+                // right_child will become left_child of divider key
+                divider_cell = page.Cell.init(
+                    try self.get_divider_key(&curr_last_node),
+                    node.right_child,
+                );
 
                 try node.append(divider_cell);
                 node.right_child = new_page_number;
             } else {
                 const new_page_node = try self.pager.get_page(page.Page, new_page_number);
-                divider_cell = page.Cell.init(self.get_divider_key(&new_page_node), new_page_number);
+                divider_cell = page.Cell.init(try self.get_divider_key(&new_page_node), new_page_number);
 
                 try node.insert(divider_cell, last_sibling_info.sibling_slot_index + 1);
             }
@@ -526,7 +580,7 @@ pub const BTree = struct {
                 }
             } else {
                 const node = try self.pager.get_page(page.Page, info.sibling_page_number);
-                const cell_size = self.get_divider_key(&node).len + page.Cell.HEADER_SIZE;
+                const cell_size = (try self.get_divider_key(&node)).len + page.Cell.HEADER_SIZE;
                 last_increment = cell_size + @sizeOf(page.Page.SlotArrayEntry);
                 space_needed += last_increment;
             }
@@ -542,7 +596,7 @@ pub const BTree = struct {
 
         if (change_info.newly_created_page) |new_page_number| {
             const node = try self.pager.get_page(page.Page, new_page_number);
-            const new_cell_size = self.get_divider_key(&node).len + page.Cell.HEADER_SIZE;
+            const new_cell_size = (try self.get_divider_key(&node)).len + page.Cell.HEADER_SIZE;
             space_needed += @intCast(new_cell_size);
             space_needed += @sizeOf(page.Page.SlotArrayEntry);
         }
@@ -749,7 +803,7 @@ pub const BTree = struct {
 
             const sibling = try self.pager.get_page(page.Page, sibling_info.sibling_page_number);
             cell = page.Cell.init(
-                self.get_divider_key(&sibling),
+                try self.get_divider_key(&sibling),
                 sibling_info.sibling_page_number,
             );
             bytes_slice = try self.allocator.alloc(u8, cell.size);
@@ -764,7 +818,7 @@ pub const BTree = struct {
                 var cell: page.Cell = undefined;
 
                 const new_page = try self.pager.get_page(page.Page, new_page_number);
-                cell = page.Cell.init(self.get_divider_key(&new_page), new_page_number);
+                cell = page.Cell.init(try self.get_divider_key(&new_page), new_page_number);
                 const bytes_slice = try self.allocator.alloc(u8, cell.size);
                 cell.serialize(bytes_slice);
                 try raw_cells.append(bytes_slice);
@@ -875,10 +929,17 @@ pub const BTree = struct {
                 // collect latest with change info
                 for (change_info.sibling_updates.constSlice()) |info| {
                     // collect latest info for pages which we didn't free
-                    if (info.sibling_page_number == 0) break;
+                    if (info.sibling_page_number == 0) {
+                        // when we first encounter free page we know for sure that pages
+                        // after that are also freed. We can add assert here to verify
+                        break;
+                    }
 
                     const node = try self.pager.get_page(page.Page, info.sibling_page_number);
-                    const cell = page.Cell.init(self.get_divider_key(&node), info.sibling_page_number);
+                    const cell = page.Cell.init(
+                        try self.get_divider_key(&node),
+                        info.sibling_page_number,
+                    );
                     bytes_slice = try self.allocator.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
                     try raw_cells.append(bytes_slice);
@@ -887,7 +948,7 @@ pub const BTree = struct {
                 // new ones should be added before adding remaining
                 if (change_info.newly_created_page) |new_page_number| {
                     const new_page = try self.pager.get_page(page.Page, new_page_number);
-                    const cell = page.Cell.init(self.get_divider_key(&new_page), new_page_number);
+                    const cell = page.Cell.init(try self.get_divider_key(&new_page), new_page_number);
                     bytes_slice = try self.allocator.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
                     try raw_cells.append(bytes_slice);
@@ -899,7 +960,10 @@ pub const BTree = struct {
                         // check if this is right child
                         if (slot_index == sibling.num_slots) {
                             const right_child = try self.pager.get_page(page.Page, sibling.right_child);
-                            const cell = page.Cell.init(self.get_divider_key(&right_child), sibling.right_child);
+                            const cell = page.Cell.init(
+                                try self.get_divider_key(&right_child),
+                                sibling.right_child,
+                            );
                             bytes_slice = try self.allocator.alloc(u8, cell.size);
                             cell.serialize(bytes_slice);
                             try raw_cells.append(bytes_slice);
@@ -921,7 +985,10 @@ pub const BTree = struct {
                 {
                     // Note: this can be also obtained from just copying cell from parent if parent is available here we can skip loading right_child
                     const right_child = try self.pager.get_page(page.Page, sibling.right_child);
-                    const cell = page.Cell.init(self.get_divider_key(&right_child), sibling.right_child);
+                    const cell = page.Cell.init(
+                        try self.get_divider_key(&right_child),
+                        sibling.right_child,
+                    );
                     bytes_slice = try self.allocator.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
                     try raw_cells.append(bytes_slice);
@@ -961,10 +1028,10 @@ pub const BTree = struct {
                 // if we have only have three cells left and we can't fit two inside current sibling
                 // then we will need to use one for right_child, and other two for next sibling
                 if (raw_cells.items.len - curr == 3) {
-                    // need to check if we can fit two in this node itself
+                    // need to check if we can fit two in this node itself (third will be right_child)
                     var needed_space: usize = 0;
-                    needed_space += page.Cell.from_bytes(raw_cells.items[0]).size;
-                    needed_space += page.Cell.from_bytes(raw_cells.items[1]).size;
+                    needed_space += page.Cell.from_bytes(raw_cells.items[curr]).size;
+                    needed_space += page.Cell.from_bytes(raw_cells.items[curr + 1]).size;
                     needed_space += 2 * @sizeOf(page.Page.SlotArrayEntry);
 
                     if (needed_space > sib.page.free_space()) {
@@ -977,10 +1044,12 @@ pub const BTree = struct {
                     attach_right_child_and_move_to_next_sibling = true;
                 }
 
-                sib.page.append(page.Cell.from_bytes(raw_cells.items[curr])) catch |err| {
-                    assert(err == error.Overflow);
-                    attach_right_child_and_move_to_next_sibling = true;
-                };
+                if (!attach_right_child_and_move_to_next_sibling) {
+                    sib.page.append(page.Cell.from_bytes(raw_cells.items[curr])) catch |err| {
+                        assert(err == error.Overflow);
+                        attach_right_child_and_move_to_next_sibling = true;
+                    };
+                }
 
                 if (attach_right_child_and_move_to_next_sibling) {
                     // attach right child and record change_info
@@ -1007,7 +1076,7 @@ pub const BTree = struct {
         // if we still have cells we need to create new page
         if (curr < raw_cells.items.len) {
             // we shouldn't have only have one cell at this point
-            assert(raw_cells.items.len - curr != 1);
+            assert(raw_cells.items.len - curr > 1);
 
             const new_page_number = try self.pager.alloc_free_page(self.metadata);
             var new_page = page.Page.init();
@@ -1098,7 +1167,7 @@ pub const BTree = struct {
         }
 
         // pivot is the last cell inside the left
-        const pivot_cell = page.Cell.init(self.get_divider_key(&left), left_page_number);
+        const pivot_cell = page.Cell.init(try self.get_divider_key(&left), left_page_number);
 
         // reset the root
         root.reset_content();
