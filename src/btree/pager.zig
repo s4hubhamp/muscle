@@ -95,9 +95,7 @@ pub const Pager = struct {
         }
 
         // persist journal
-        self.journal.persist() catch {
-            return error.JournalError;
-        };
+        try self.journal.persist();
 
         // sort for sequential io
         std.mem.sort(u32, self.dirty_pages.slice(), {}, comptime std.sort.asc(u32));
@@ -115,9 +113,7 @@ pub const Pager = struct {
         // clear dirty pages
         self.dirty_pages.clear();
 
-        if (execution_completed) self.journal.clear() catch {
-            return error.JournalError;
-        };
+        if (execution_completed) try self.journal.clear();
     }
 
     // Moves the original page copies from the journal file back to the database file.
@@ -146,6 +142,13 @@ pub const Pager = struct {
         print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
     }
 
+    fn mark_dirty(self: *Pager, page_number: muscle.PageNumber) !void {
+        // commit if we reach max dirty pages
+        if (self.dirty_pages.len == self.dirty_pages.capacity()) try self.commit(false);
+        // mark dirty
+        try self.dirty_pages.append(page_number);
+    }
+
     // update page inside the cache recording it's original state and
     // when we reach max dirty pages capacity then call commit
     pub fn update_page(self: *Pager, page_number: u32, page_ptr: anytype) !void {
@@ -162,10 +165,7 @@ pub const Pager = struct {
         }
 
         if (!is_dirty) {
-            // commit if we reach max dirty pages
-            if (self.dirty_pages.len == self.dirty_pages.capacity()) try self.commit(false);
-            // mark dirty
-            try self.dirty_pages.append(page_number);
+            try self.mark_dirty(page_number);
 
             // if some page already dirty we know for sure that it's part of journal
             // if page is not dirty it still can be part of journal.record because we might have
@@ -228,10 +228,10 @@ pub const Pager = struct {
             // or used existing pages, and mark those free to use again.
 
             free_page_number = metadata.total_pages;
+            // mark dirty
+            try self.mark_dirty(free_page_number);
             // put inside the cache
             try self.cache.put(free_page_number, try FreePage.init().to_bytes(), self.dirty_pages.constSlice());
-            // mark dirty
-            try self.dirty_pages.append(free_page_number);
             // save to journal
             self.journal.maybe_set_first_newly_alloced_page(free_page_number);
             metadata.total_pages += 1;
@@ -283,7 +283,7 @@ const PagerCache = struct {
         return self.cache.items.len == self.cache.capacity;
     }
 
-    // evict some page non dirty page to make space
+    // evict some non dirty page to make space
     pub fn evict(self: *PagerCache, dirty_pages: []const u32) void {
         // we should be always able to evict
         assert(dirty_pages.len < self.cache.items.len);
@@ -348,13 +348,23 @@ const Journal = struct {
     };
 
     const JournalMetadataPage = extern struct {
+        // zero indicates no allocation
         first_new_alloced_page: u32,
         n_pages: u32,
+        // Inherently array len here becomes max pages one query can modify
         pages: [1022]u32,
 
         comptime {
             assert(@alignOf(JournalMetadataPage) == 4);
             assert(@sizeOf(JournalMetadataPage) == muscle.PAGE_SIZE);
+        }
+
+        fn init() JournalMetadataPage {
+            return JournalMetadataPage{
+                .first_new_alloced_page = 0,
+                .n_pages = 0,
+                .pages = [_]u32{0} ** 1022,
+            };
         }
     };
 
@@ -378,12 +388,7 @@ const Journal = struct {
             assert(bytes_read == muscle.PAGE_SIZE);
             metadata = @as(*JournalMetadataPage, @ptrCast(@alignCast(&buffer))).*;
         } else {
-            metadata = JournalMetadataPage{
-                // zero indicates no allocation
-                .first_new_alloced_page = 0,
-                .n_pages = 0,
-                .pages = [_]u32{0} ** 1022,
-            };
+            metadata = JournalMetadataPage.init();
         }
 
         return Journal{
@@ -488,14 +493,15 @@ const Journal = struct {
         // all the entries.
         _ = try self.io.write(0, std.mem.asBytes(metadata));
 
-        // reset
+        // reset entries
         self.entries.clear();
     }
 
     // clear the journal file
     // this gets called only when whole query execution is completed
     fn clear(self: *Journal) !void {
-        try self.io.truncate(null);
         self.entries.clear();
+        self.metadata = JournalMetadataPage.init();
+        try self.io.truncate(null);
     }
 };
