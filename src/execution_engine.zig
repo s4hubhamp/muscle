@@ -49,59 +49,61 @@ pub const ExecutionEngine = struct {
             parsed.deinit();
         }
 
-        const results = switch (query) {
+        var results: QueryResult = undefined;
+
+        switch (query) {
             Query.CreateTable => |payload| {
                 is_update_query = true;
-                return self.create_table(&metadata_page, tables, payload) catch |err| {
+                results = self.create_table(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
             Query.DropTable => |payload| {
                 is_update_query = true;
-                return self.drop_table(&metadata_page, tables, payload) catch |err| {
+                results = self.drop_table(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
             Query.Insert => |payload| {
                 is_update_query = true;
-                return self.insert(&metadata_page, tables, payload) catch |err| {
+                results = self.insert(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
             Query.Update => |payload| {
                 is_update_query = true;
-                return self.update(&metadata_page, tables, payload) catch |err| {
+                results = self.update(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
             Query.Delete => |payload| {
                 is_update_query = true;
-                return self.delete(&metadata_page, tables, payload) catch |err| {
+                results = self.delete(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
             Query.Select => |payload| {
-                return self.select(&metadata_page, tables, payload) catch |err| {
+                results = self.select(&metadata_page, tables, payload) catch |err| {
                     return try maybe_create_client_error_response(err);
                 };
             },
             Query.SelectTableMetadata => |payload| {
-                return self.select_table_metadata(&metadata_page, tables, payload) catch |err| {
+                results = self.select_table_metadata(&metadata_page, tables, payload) catch |err| {
                     return try maybe_create_client_error_response(err);
                 };
             },
             Query.SelectDatabaseMetadata => {
-                return self.select_database_metadata(&metadata_page) catch |err| {
+                results = self.select_database_metadata(&metadata_page) catch |err| {
                     return try maybe_create_client_error_response(err);
                 };
             },
             else => @panic("not implemented"),
-        };
+        }
 
         // Handle rollback/commit logic
         if (should_rollback) {
