@@ -20,7 +20,10 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     const allocator = gpa.allocator();
     var engine = try execution.ExecutionEngine.init(allocator, file.file_path);
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+
     defer {
+        arena.deinit();
         engine.deinit();
         const deinit_status = gpa.deinit();
         //fail test; can't try in defer as defer is executed after we return
@@ -64,7 +67,10 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     }.f;
 
     var delete_query: Query = Query{ .Delete = .{ .table_name = table_name, .key = undefined } };
-    const select_metadata_query = Query{ .SelectTableMetadata = .{ .table_name = table_name } };
+    const select_metadata_query = Query{ .SelectTableMetadata = .{
+        .table_name = table_name,
+        .allocator = arena.allocator(),
+    } };
     //const select_database_metadata_query = Query{ .SelectDatabaseMetadata = {} };
 
     // Case: Inserting inside root when root is a leaf node.
@@ -73,7 +79,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     try validate_btree(&metadata.data.SelectTableMetadata);
     assert(metadata.data.SelectTableMetadata.btree_height == 1);
     assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 1);
-    metadata.data.SelectTableMetadata.deinit();
 
     // Case: Deleting when root is leaf node
     delete_query.Delete.key = .{ .TEXT = "a" };
@@ -82,7 +87,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     try validate_btree(&metadata.data.SelectTableMetadata);
     assert(metadata.data.SelectTableMetadata.btree_height == 1);
     assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 0);
-    metadata.data.SelectTableMetadata.deinit();
 
     // Case: Splitting root node
     {
@@ -94,7 +98,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         metadata.data.SelectTableMetadata.btree_height = 2;
         metadata.data.SelectTableMetadata.btree_leaf_cells = 2;
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -110,7 +113,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         assert(metadata.data.SelectTableMetadata.btree_height == 1);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 1);
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -126,7 +128,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         assert(metadata.data.SelectTableMetadata.btree_height == 2);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -141,7 +142,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         assert(metadata.data.SelectTableMetadata.btree_height == 3);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 4);
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -158,13 +158,11 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         assert(metadata.data.SelectTableMetadata.btree_height == 2);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
-        metadata.data.SelectTableMetadata.deinit();
 
         // insert B back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
         try validate_btree(&metadata.data.SelectTableMetadata);
-        metadata.data.SelectTableMetadata.deinit();
 
         // Delete A
         for (&txt) |*char| char.* = 65;
@@ -174,13 +172,11 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         assert(metadata.data.SelectTableMetadata.btree_height == 2);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
-        metadata.data.SelectTableMetadata.deinit();
 
         // insert A back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
         try validate_btree(&metadata.data.SelectTableMetadata);
-        metadata.data.SelectTableMetadata.deinit();
 
         // Delete C
         for (&txt) |*char| char.* = 67;
@@ -190,13 +186,11 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         assert(metadata.data.SelectTableMetadata.btree_height == 2);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
-        metadata.data.SelectTableMetadata.deinit();
 
         // insert C back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
         try validate_btree(&metadata.data.SelectTableMetadata);
-        metadata.data.SelectTableMetadata.deinit();
 
         // Delete D
         for (&txt) |*char| char.* = 68;
@@ -206,7 +200,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         try validate_btree(&metadata.data.SelectTableMetadata);
         assert(metadata.data.SelectTableMetadata.btree_height == 2);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -222,7 +215,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         assert(metadata.data.SelectTableMetadata.btree_height == 3);
         assert(metadata.data.SelectTableMetadata.btree_internal_cells == 3);
         assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 4);
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     // tree state
@@ -241,14 +233,19 @@ test "regression test 1" {
     const allocator = gpa.allocator();
     var engine = try execution.ExecutionEngine.init(allocator, file.file_path);
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+
     defer {
+        arena.deinit();
         engine.deinit();
         const deinit_status = gpa.deinit();
         if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
     }
 
     const table_name = "stress_test";
-    const select_metadata_query = Query{ .SelectTableMetadata = .{ .table_name = table_name } };
+    const select_metadata_query = Query{
+        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+    };
     const insert_keys: [6][]const u8 = .{
         "TCMMYDZPMXXZRALNIDLSFKOFGQFNXBZCGVAFEYEKDGFUMVETYJHRPACVHHGRETBKQYEWHPYSUAUMAENOJGZTRUCHGECHCFYJONDMYLDBOXNJVLUTKSWRNCENZVLSWIJXKOLBKRCHMSMOIIOSUVBXWZJPWCWMRXRGFJKEVTDWSMFYJQTQVFNPUHACVMMWDVUDTZBBQGYYJFOPWBVGGQXJVTXUVNBVUZDPLXHUZMYICKACYAITIMCGUSVIAIUBZHSPWJHTDNBTIAIHSFFBZHBXJRKFYRWTTUGOCOFMAFZKBIJWQJVHIGPUCPIQVNKQOQGVKDLAYSCBRFOVIUQZBJUSGBRJDXAXJQUHUXTQDPZKFEJNPQEFPSTBBJQBHFZHCIZYPJNWBGGJKQVLIGRDNKNIAZEHWPQVMWPDWMIQQBASIENVZNNPOCWNTBKOPRARIZVSIBFFNAGRVLIMILXFUZZPKLAOIOXMJXBWVFXOIQBMGOBIEBKMXGUFOOCFPKEYQNEDHVXQWXIJHWHJZRGJEXYUUGEGKZWQCBHGHWKGKMWHTFRTMEMGHUFHBPXTAGKFYLWGKHWBKTZJHXKDCUMIGGDQWEPLTHXLQWGPRIAFUVSOHZIEVVOOPRXUOXDITOFSFFYKCONYFXRWMRWYJNJCAWFWQQHUPYMLAKPTORLEFLTVNMWSCXBZDLJAUSHGUEHIMRWYHOKHCNEXZODUBHOFIDZDTEQFHGMZARAZGTFUDNRKKNUDWDDEFLJHCIJDRIGNTVCWOPNRNCSPJRMDMOCLJJCIYVEWNZSNRNNQECPVLZCWQOKRWCIMZCDOMDJFNEOYBNWVOYRDVBSPFLQKASJMTADALPDJNMYPISFOWELOREWXWKZFTTPSBKEELBOZWYFRPFXPVOEZQMZPXJLQQXZMCBWIRBUARAKUWAITQIYXSKNCXNADZBUQWFHQQXHAYTYWNOWZBMOZMQPIAURCNHMQIEXBJRJCGIMNXTZNPPMOMAUFKZUALHLXELUJAJPUZYZTSGWGHGHIJPMSRFHNTOFEEBUKDDDCZUUOXQQDTRGDINXVEHYMZXTVCVGHOXBGJPSGSPEMZMQCUBNNMZAVJYEQPCOQRFQWPACZPXNJXLAZQAZJCSUQJXQGKXWCRLRRWUPFQOXPCVEKGDDVYBQTGSBNSUKUVYNUXBHEXGMWFMDGVFPEIKVJQAYVOEVPNCBMIGPQVPXBOZXRPNAWKFXWQUJFUMYYZHQRMLDIPQHTKFNSHWWGSUXKLSHGFCRDCCEFRSTAWBHEMYIVLWSTKUMONFYLDOLXWTDYOXPPHHBZQXMMMWRSHUMNJLBAVERAREMSLFXGPSILDPAPZHVBLCYLCARXQFSSHKTLBSKQAEFYVRRKIJDQVTMTHFWXAIKBUHDRRRRNSVPYIGMNSBFZJQXJSAJEKQGWTTLGJBDBANZQANHCHIRELQNHRGSLXKWBPMBRKVGOPSYDLAECYXMSZVBIMLKAWKSRPIFADJXRIUXDAFWJYZGDLSXYVFPNFHLDDYYQLJNCNEYGIJZOZPKSEBXEYRGFSDRKOWSMMKJCTHEZFOLLESWGKECXEAAYRQLJBHIYYARYVDXPKCLPYZQPYGARZOYJGJLPNMUBPDBQHRZPWTPGIXBNQWOGVCEWXWPDWPIUIZKFAJOUBZTSNZFXACYUHMKLPFGDAZMMZOEAAEBHDPWJWEPUXXNOZYYRMKCCADVBQEDERXPWXDABELXYVHFLVULUURVHQZHKFLKMJSNSYSOCHPPSWMLHQHBATEGNYEXQEUOOBZHZQIIMANWBXLAHCUSAMYOVYUEILYMXOJKKDHXRDYBWWJXAHZLZKZHDGNAAHTAJRJBMLRQHPDSAMNJSAYSSVWBDNEBEHZDXZYRRJAPFNMHNUULOYCULDJHMHBJCLAKJFGLLIQHLBAQPOAIBHTNPMJRJVNXBMPSDPSNWIWJABXCBDHIIZKJKKGFVLVBCPNOOAFXLJYJSBESZNSIAZMCOHCVYOPHBUFTDWJDOXGLDHPZ",
         "ZHDRTNDDRPPENVMCURXRLKEXCPHYCVOUFCYASIHFSGZMVYHIYGFBGVYXGLTHHXOQUSMDDVNKOMVIVZKEFXLITZQUAJFLXCRSRNLYQOYXYQVIRRWEUGCXRBKIVLOFOQDWGWRQZSPHCPNZKVRMSDWBRYOBMWQYNWQTVCQOQRIAZXTWCVLYHTQVYIJZKTPSREGTOMMIMKJFMGMCNPUPOJTIZFNJFIRFDCBQRJKLFZGGNVBDLPWZVUFTGZFYGLRDSHOBWPNNHVCYXWCYMTUOUPAHQNHTZWDBYEWNTGDJTOWXUIBCOLFMQKPTTLOBQFEPJHJYNUSNXUIDEMVARBAXZIEDDZDKBCRBPZPUJMOKJOFRINHNTCBZNXQIUFKMGZBVJQVHAGGAQZGGXBHFWSCUXATWKGWGSDVYZKVFCKGIZIRDTWZYAEADTVQKPJVUONGDMERNAONMRRFXFHSJKZIUNLDOBLQPEOHDJPPXNEALVTSNPELMRAYFKREOERMQAKFLGVYETXXDCPMIRZJUCZRNUFXLOMCENULRVMYMBFDIUKGUKTAFUNZQAZAZDJGLPTTWUMFUZSNJWPNKWKZLOJNGKKRVSEWJZJLECYPXQXAMYPQDVHLPJPKNIQQVJVARBPAOVWQMOLNZUOZJFWQCSGPIDGBGLDCMKJSQXIKYCPGPWMULKHDXTPUXOVYUSPXOZJMWETHTLFBOOHKWWTZNOFJBMPZQOCWZJGOLYEKTXUPEMMIYLIQMPMHYWTUGAXEHLBIGPNXMLBCKOTBICAYMGALPQJGTVZEOEBLUMCPOQKLJGBXCUFACOZTBICRFTYQAINWMAUKBDGPDMTZJNZBNCMVMDOBJCGZXUQNXSXXGEFSRLJJSYZNTHXZSWPBTRDKPRGMFGUYZQHYMVIICWPZMLAUCKIGYXLHDAQLUDXAKKNDYZWDSHKYTIEMJANKCOMPPMEEBUAXSECVVISPSDZNMZSDXGLHZEDCCEKWMDUYOJZYZIEIDKIOPTFFSJSPPNHBOQTGEVHYRGMWEMUQAMZSNBYMIXBIFMCGYBUYLQOYFTMHRKJHOELBXZGPBPOQTCZAUTTMYSGXVVYRHPQYIHOGBPUPHZIOFYUWVLPJHCHIKIUQLKVGQMPMSURIHLWWHNBNDBUHHJZEOXDNTTVKTBOYISGNRRXANOHWSGQAVZGBZHUNTOVBNERPQFZLEDISCHGYKGPWOTZYQYSEIFFVNDSUYVZSJCVTATPYKRADAYAKJZTBYKGNHEERTQWNTYOACWKVLJPZCHQDVTCEKGILJQZJUVFLKNHZHVOTKVNDYADTWGVRIEBYODCQIBOEMLFFNVDFVAUKJUWHVTVAFMOHDSJVMAVSZHNWWYNRBGNKCXANSPBKCCHJLJWPJCUZICXNLGYNIBXQFZOGGQGMCRRBDUQOTWXXJZCZOLAFLNPBGUHOCLHZXCSMJFOZKOXGIDDNELMQYKIRTPDOJZUPWOPSXPAQJBLRSRACNNZVPOOKLBFJQXOSZNUPRESOVZSRSQNDBKLZKPLVHBVCVRUVRCDIGYBMYUGUUBGVDKCFKAFUANJFVKGWEAFHNOHYIGDBNXBRENVHYRYXMKKZXAONOGQQEWDLSXPBEAMDHSPUFFLQUMXNZLRTGINKVCGYDRKDFFBVPIPLIYBCPKBNGUZGEMZCTWJTAALYGAGTEMBCWSTZPTSSSEJJFXBZRBUUSROXRIWERJAZKOYVONTAREVRJJZJSVEJPBMVYGCDRHXRYEQHBDPREZYHGLVFXLVSYCQDXXCUTNNZCLODEEHFIKDZGWLUBTFWLUAFLUNUQQWDJSDLJRPRTMUYXACAUNEMJKCITYCAZEIJNJBLMQOGBQSSOJKSOJVMRJDMWBUWCOBESIUZDEKMCQAXEAVPQCQLHSLHRRHBGXUKAAKOQCBCSKLNXULRACYKRGQNFOHZEYTEHWTFFEASWQHEGVYBHBMIGEXOTVVEMGJZMFGLRUPDSPALPLIZT",
@@ -305,7 +302,6 @@ test "regression test 1" {
         var metadata = try engine.execute_query(select_metadata_query);
         //metadata.data.SelectTableMetadata.print();
         try validate_btree(&metadata.data.SelectTableMetadata);
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     std.debug.print("Test success\n", .{});
@@ -320,14 +316,19 @@ test "regressoion test 2" {
     const allocator = gpa.allocator();
     var engine = try execution.ExecutionEngine.init(allocator, file.file_path);
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+
     defer {
+        arena.deinit();
         engine.deinit();
         const deinit_status = gpa.deinit();
         if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
     }
 
     const table_name = "stress_test";
-    const select_metadata_query = Query{ .SelectTableMetadata = .{ .table_name = table_name } };
+    const select_metadata_query = Query{
+        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+    };
     const insert_keys: [7][]const u8 = .{
         "JLJCGFUPJQQPHZSYLYKZVFDUJDPDEHJHJAKOPQDFJDBTQKTVJLTAWHMHSLXFYFCDJYWDFCBWFJULCJNXPSUEJXIFWVZPDDKXHFSBPKVTLLNWYFANTWLLVVFHDFTDUZNZGFJZDPYWRXPVONHLDUFJARBIFNVYFUIGNDGSVEAHKOIQXWFNFYVZMIQXJTCELQXTJIYUIGLZSQHQHAAAHAZDAYPUQWRRBYXUXJDYJMEIBFTKVCUMUXJPRHUKEFGMXEJYKGYENZWPSUQLJLUBJIAPFQTFNAUJXKQREQFHFIHYCNPEDLGHPUAWKCAZRBJNFKQGRTAPMUSNRTDUDDMEEYZKTIQWYAEDARJAQNYBRPISOQJDOZHLTLEPCNVXDCANACDDHEAGIJUYMHPWCHQVVBAQJQGETTBNSZPENUIRZLYIYHRSKXLXVNBXBUJMAHFBWUGHCHPIDDWDMEKCDYFRBOKJDRFQGWOJMNASMWBKAGNYRGAOCPXICQZHRXSDZAHTKXAPZNLCMGRFNYVNORZCTCSLGWZZFQCKWBARIMJRRRDSZIFDBFKZEOUKIUUNHAKVCYWMFJCSGKMVICLGQLJODQGIUMAWSWGRWWHSGBBDZBBTKDIFREETMMCAPLCGHLCFIFORKBLIBJORJNQNIBIQFDDHWLVMTCABTMWNBDUROBITULTQLFTSKNULFHULKKFBPYTNNRWPOKDFRWPRAVINPDPTEZPMQVDKCOBBKRGLGRUFCIKJNABAFPNYSJDBXYWTKRDHDCMPQGKAJWXOUHKNUHFDFXKKXLGRANJVGJRVINHLNKTFEIORJQXTCPGDUIAPVSBAVYELRYOTHHZRKKPVPIVNERAIQRXMNYWMMQLTKZNUJSHVZFHCDGAVABLYXNHAILGNFRINVNVUVGIUWDVVBNJSPAFLBDJTZHCHODXHOHRQALVAWSCKFTZTIBDCZQJHPOSADXMYREJVDRBXVAJLDLIRQUYEWRHHPDEZYQPXEKPAAUGJGBZBJGTAWFVULHUQPYOTGDAFGLEJDKFAYBRJFMNAGWIXBPGXGJDIHPPRJRKJAWXPOXIVPTYAHLVFQSYUCYYBHNICGTGZWVLYLOXRNLQLPWMUKOJIBKAYBTDYYLOEZYCXUUDRCMLXELPTIAAYHIUCOLOEVBYCBYQGGMVDYYSGITWQDOSIFKULGFIPOQCCWLEPXWXBOHVFWQZKTPRFSOOZRKQQWQLHEMZDZLMCZPBLTCFKFUZQXFTFZKMWVZEDWDTTZDWNHALSXJPGRGXFDCPVHSLTGEVLQZDHXSBGGLTQNLXABDWJTUOPQDROXPEGNHHNOFGTOGRZXTROWJAGDMTFUMSYPYWNYRHSKSJCKXSFSNMZQUEJLYSLKDJQWJMGMJMCUVWVNBDALCMFBQAKTGBJJBROXCPGIIKEQKLOFPSBINCWLWXSMSYZRHPMYAPXOHIHGFRBQRSNGCLVULYRRKVQOORIDZAAJZBIZNYMYFVOQRDTDTIVBZBEKKPVUHHOEKHHKWCLAYVOPOCYLFHSVRYUKPDRPSEDZAZDUZDVKYQBCSIVRFGWVKNBVVJFFUZUDNCBIICLKJMTRGSMRIMKPKBNNVFGIHUSYROLTEVTUDHUTYXHOKUFDTRBGCGHNFZOIGFHCFXGWLUMPFFHKXKMGSIKMFBZZRWLEUUDRCAWCEMRAWBIKHIRRTCXGEDKJHHLOUKFSBPEOTFQXWWFBQNPORKLGCTNXMROSVWBINAHSXVPUTSSVHIUBVQHVDYBPNZSYIORPKDDDCYKLQJVUEUULTQCMKDQIYNIGMCYCTKGSFAAUJWBSTDJGGNTGATKQOYIENZVQPBOTGCFRTGTGHDPTWTDMSBQSTYKQTVYMNRKMSIBCOTJDZREDMEYMPMCPGLAHDPQCHDCQWCTHVOJAPUWRUUMNWCQGECHJAKHRMAEYHRQIWXPATVEOBLZEVTQCTVQAXJJOFKMYIOVBODRIPPEGYWNRVYZIQXNXKBUCISAZLLCRXNLMJROFXDRGQVMKEC",
         "DOCDQBXOGXOLTZIVRGDMPSRKACAJSHFBPWKLTQLJICEEXYKHSSVSBFFCKJSYRLENOFBEKWRQXYXIMYQAYNBUIYKSHXCLWHDAJESFDJBNSZDHOKCFFDSLAJGQWGVMISVWLSTABNHFEHEMMTEXZCFDVUDJFLXPMHICLIWALIXZDWRADHDZCCRRCUMSOFFZMZJERJGWJUAVJOSKMOONTECOAHAFVLZCZGJLLLFHONXYDAVGVKLSBZXBTGEDTRMGPWZYQEUATWPLTXVKKISQWTXUNDUCGNOQCROIHOOOBIFMTCHZIXNBVBNKMXPENOYMCBROUDCCSWNIPIHYIAMVRFTYELUETGSHGWWQQXKJDXISYOILNMOASHUHFJGXXDVZNRHBMLUGCAEOURUPFUIESOMCSNWJHAJSPQIBLWEIWFWQVVUWSXEGZUFCQEICUDECGJIWHLBMCUHLIEZJHPUXNZRJFOXBQOEQKQDHMWOFMSSVXZYEACMCZCEVZCKFPEMGBWLCXFQZAKEIGGTOBOFBCBMVINOMBYMTHNUHAFZGUUJDOAUJPIKUTNJBCLZVTHCAKAQJDUNHZUCPVAAJXWLZTGCRKSFGZAGCCXRCQBNPXPLCCUWMBPARUYMVAQUGYBFGCJTFFWDJLCAHOFWUYYRJYDPVOOSZUINCDMJONGYETLOTAKBJIOFGWWGCTCSQWDTJZTDGJLIMAAYJNEWDYJPBNGJFUJKOMPDFGNHMISHZWZGCJNTPCDMONYGPUQCSTOJWTZSVCMDNAACHPIDQZZWPOCESVSELVDKGFWMMZPJFJSXNYLJLKKIIVVCMBNDKDFNMJHJMWQOMEHWUBVCCHUGRUQJCQHLTUGFIOXSAUUYQQVPHNZAAAKXBPYTUVRRTUAEDNNPDSASQIPWJESVZZBNMRWAHDJXEZBHXAETTUOUVBSMLGWOVHWZQENYJFTSJSOZBHVFCSINITAGMWWTZKAEQGNNNVDHXHVHIAMNTOMFZFLYKJBWXBXMJPFKOHZZIWGKJSEIBHZXZQUXTPEGFMQUFAEKMJBUWEWGZRHNBAFMVAEDCXHOFPDZZDRYNSKXZIBRQNBIRSINEGESZBOPBITGFQICLRXSUUCKFSXZJORJKFGXPPQMZUPZTKBMTKRYWVRBWDAHMWCHYUVDEJCEBQVFPAAOICNFMBJTKUWVRTFQCYDWZYMHQBHRYWJOUDFFXOJERAVKRBNLZPLZLHQGNGDHLVXMTNZKLTWKXJEOLVHGRDOZMOPDVTYKNTZIJFIQFJNYUCAPWOYDSDWPRYTNSXSIFPDVEIJMCBVEJNUXKDMWOBWRNSBPBZMARIJHPESLSOMQHTFVSQNLCVOLCZUCYAWYFNALTUNWPYJYVQZSFCVNTQJIBCCPNJEYHFRNPFBIDKAHNQAYEZHUILTBFTBSEEUSSFSMOXQZFADQYNCMXPKPXOKQICOORVHETTDNZGXBADKOXAGGRMOLFQILEXTEPHZBJANXPSYFQYPLJARZZJRVRRALSEZPGPRRTXTSQUOJXKDRBTWRAVTZBRDJXOKNKDAZCARTWSLYDKALRLVBZAAJSIXCZXHDETLDRBAGDJUMZZWFRUMUXTUDWFSBAFCQIFPULKPMLYQPESXJMYZROINEZSAUJCQPXVVSMOZAKNCURWNMOUKUCTHFGIEUGEELULNOQOCUQRIAXRNZZQEGWGQPVZNRABTPHWTCHPFEDPLHPDKNVWXLTBIOOMLBGDDGTOARZLQKFSEGOMENYYEMPZNNTLZYFELFFBYRMGAICPSBTHIGQABGDRXQFALGQAUVRPXCXWZSAYJDRHKMMJCHEGJEBOJGOZKDOZVXCMZPZIFVGYMNTXXXBPLZRRVQQUQOWCNQMCZEIWMVBBRXAWPELYCPXSVKEATCLUFABRJXPURGMEHBXDRBRWSVZFMCOWLCQZTDGIINSUKFJITWFKABJKJEHIRVOJUTPURDJUFRJYIIOWHBEFKYUWESOGIAKIPHQLATVPBOHOXYDKKDQNMDDYGRBEDO",
@@ -385,7 +386,6 @@ test "regressoion test 2" {
         var metadata = try engine.execute_query(select_metadata_query);
         //metadata.data.SelectTableMetadata.print();
         try validate_btree(&metadata.data.SelectTableMetadata);
-        metadata.data.SelectTableMetadata.deinit();
     }
 
     std.debug.print("Test success\n", .{});
@@ -399,7 +399,10 @@ test "stress test randomized inserts on 1000 entries" {
     const allocator = gpa.allocator();
     var engine = try execution.ExecutionEngine.init(allocator, file.file_path);
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+
     defer {
+        arena.deinit();
         engine.deinit();
         const deinit_status = gpa.deinit();
         if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
@@ -452,7 +455,9 @@ test "stress test randomized inserts on 1000 entries" {
     }.f;
 
     const rand = std.crypto.random;
-    const select_metadata_query = Query{ .SelectTableMetadata = .{ .table_name = table_name } };
+    const select_metadata_query = Query{
+        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+    };
 
     var inserted_keys = std.ArrayList([2023]u8).init(allocator);
     defer inserted_keys.deinit();
@@ -499,7 +504,6 @@ test "stress test randomized inserts on 1000 entries" {
                     metadata.data.SelectTableMetadata.btree_height,
                     metadata.data.SelectTableMetadata.btree_leaf_cells,
                 });
-                metadata.data.SelectTableMetadata.deinit();
             }
         }
     }
@@ -514,8 +518,6 @@ test "stress test randomized inserts on 1000 entries" {
     std.debug.print("  Duplicate attempts: {}\n", .{total_attempts - successful_inserts});
     std.debug.print("  Final tree height: {}\n", .{final_metadata.data.SelectTableMetadata.btree_height});
     std.debug.print("  Final leaf cells: {}\n", .{final_metadata.data.SelectTableMetadata.btree_leaf_cells});
-
-    final_metadata.data.SelectTableMetadata.deinit();
 
     //var arena = std.heap.ArenaAllocator.init(allocator);
     //const select_query = Query{
@@ -538,7 +540,10 @@ test "stress test randomized operations on larger dataset" {
     const allocator = gpa.allocator();
     var engine = try execution.ExecutionEngine.init(allocator, file.file_path);
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+
     defer {
+        arena.deinit();
         engine.deinit();
         const deinit_status = gpa.deinit();
         if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
@@ -599,7 +604,9 @@ test "stress test randomized operations on larger dataset" {
 
     const rand = std.crypto.random;
     var delete_query: Query = Query{ .Delete = .{ .table_name = table_name, .key = undefined } };
-    const select_metadata_query = Query{ .SelectTableMetadata = .{ .table_name = table_name } };
+    const select_metadata_query = Query{
+        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+    };
 
     var inserted_keys = std.ArrayList([2023]u8).init(allocator);
     defer inserted_keys.deinit();
@@ -646,7 +653,7 @@ test "stress test randomized operations on larger dataset" {
             if (i % 100 == 0) {
                 var metadata = try engine.execute_query(select_metadata_query);
                 try validate_btree(&metadata.data.SelectTableMetadata);
-                metadata.data.SelectTableMetadata.deinit();
+
                 std.debug.print("Validated at step {}: {} keys inserted\n", .{ i, inserted_keys.items.len });
             }
         }
@@ -694,7 +701,7 @@ test "stress test randomized operations on larger dataset" {
         if (i % 100 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
             try validate_btree(&metadata.data.SelectTableMetadata);
-            metadata.data.SelectTableMetadata.deinit();
+
             std.debug.print("Validated update step {}: {} keys updated so far\n", .{ i, i + 1 });
         }
     }
@@ -722,7 +729,7 @@ test "stress test randomized operations on larger dataset" {
         if (i % 50 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
             try validate_btree(&metadata.data.SelectTableMetadata);
-            metadata.data.SelectTableMetadata.deinit();
+
             std.debug.print("Validated deletion step {}: {} keys remaining\n", .{ i, inserted_keys.items.len });
         }
     }
@@ -783,7 +790,7 @@ test "stress test randomized operations on larger dataset" {
         if (i % 100 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
             try validate_btree(&metadata.data.SelectTableMetadata);
-            metadata.data.SelectTableMetadata.deinit();
+
             std.debug.print("Validated mixed operation step {}: {} keys\n", .{ i, inserted_keys.items.len });
         }
     }
@@ -820,7 +827,6 @@ test "stress test randomized operations on larger dataset" {
         if (i % 50 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
             try validate_btree(&metadata.data.SelectTableMetadata);
-            metadata.data.SelectTableMetadata.deinit();
         }
     }
 
@@ -835,8 +841,6 @@ test "stress test randomized operations on larger dataset" {
     std.debug.print("  Leaf pages: {}\n", .{final_metadata.data.SelectTableMetadata.btree_leaf_pages});
     std.debug.print("  Internal pages: {}\n", .{final_metadata.data.SelectTableMetadata.btree_internal_pages});
     std.debug.print("  Total keys: {}\n", .{inserted_keys.items.len});
-
-    final_metadata.data.SelectTableMetadata.deinit();
 
     std.debug.print("Large dataset stress test completed successfully!\n", .{});
 }

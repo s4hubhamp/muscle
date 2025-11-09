@@ -772,8 +772,10 @@ pub const ExecutionEngine = struct {
             .btree_internal_cells = 0,
             .btree_leaf_pages = 0,
             .btree_internal_pages = 0,
-            .table_columns = try std.ArrayList(muscle.Column).initCapacity(self.allocator, table.?.columns.len),
-            .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata).init(self.allocator),
+            .table_columns = try std.ArrayList(muscle.Column)
+                .initCapacity(payload.allocator, table.?.columns.len),
+            .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata)
+                .init(payload.allocator),
         };
 
         // copy columns
@@ -889,12 +891,6 @@ pub const ExecutionEngine = struct {
     }
 };
 
-// @todo normalize this. Also have a result type for all queries instead of returning null
-const ExecuteQueryResults = union(enum) {
-    SelectTableMetadataResult: SelectTableMetadataResult,
-    SelectDatabaseMetadataResult: SelectDatabaseMetadataResult,
-};
-
 pub const QueryResult = struct {
     status: QueryStatus,
     data: QueryResultData,
@@ -951,14 +947,6 @@ pub const QueryResult = struct {
         };
     }
 
-    pub fn deinit(self: *QueryResult, allocator: std.mem.Allocator) void {
-        switch (self.data) {
-            .SelectTableMetadata => |*result| result.deinit(),
-            .Select => |*result| result.deinit(allocator),
-            else => {},
-        }
-    }
-
     pub fn is_error_result(self: *const QueryResult) bool {
         return self.status == .Error;
     }
@@ -999,6 +987,7 @@ const SelectPayload = struct {
 
 const SelectTableMetadata = struct {
     table_name: []const u8,
+    allocator: std.mem.Allocator,
 };
 
 const DeletePayload = struct {
@@ -1078,22 +1067,6 @@ pub const SelectTableMetadataResult = struct {
         std.debug.print("Btree Internal Cells:  {}\n", .{self.btree_internal_cells});
 
         std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   End Metadata  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
-    }
-
-    pub fn deinit(self: *SelectTableMetadataResult) void {
-        var allocator = self.pages.allocator;
-        var iter = self.pages.valueIterator();
-        while (iter.next()) |_page| {
-            while (_page.cells.pop()) |cell| {
-                allocator.free(cell.key);
-                allocator.free(cell.value);
-            }
-
-            _page.cells.deinit();
-        }
-
-        self.table_columns.deinit();
-        self.pages.deinit();
     }
 };
 
