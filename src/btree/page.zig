@@ -153,6 +153,7 @@ pub const Page = extern struct {
         }
 
         const sizeof_slot_array = @sizeOf(SlotArrayEntry) * self.num_slots;
+        assert(self.last_used_offset >= sizeof_slot_array);
         const free_space_before_last_used_offset = self.last_used_offset - sizeof_slot_array;
 
         if (free_space_before_last_used_offset < cell.size) {
@@ -348,14 +349,14 @@ pub const Page = extern struct {
 
         // if we get updating_cell_info reserve the space at start
         if (updating_cell_info) |info| {
-            const delta: i32 = info.new_size - info.old_size;
+            const delta: i32 = @as(i32, info.new_size) - @as(i32, info.old_size);
             if (delta > 0) {
                 // need to leave extra space
                 // decrease start
-                start = @intCast(start - delta);
+                start = @intCast(@as(i32, start) - delta);
             } else {
                 // new size is lesser and hence start can move ahead
-                start = @intCast(start + delta);
+                start = @intCast(@as(i32, start) + delta);
             }
             // update last_used_offset
             self.last_used_offset = start;

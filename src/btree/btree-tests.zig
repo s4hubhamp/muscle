@@ -230,8 +230,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // 2.            (6)[AAAA..]                                (?[CCCCC..]
     // 3. (4)[AAAAAA..]         (5)[BBBBB..]        (7)[CCCCC..]    (?)[DDDDD..]
 
-    //const select_query = Query{ .Select = .{ .table_name = table_name } };
-    //_ = try engine.execute_query(select_query);
 }
 
 // tests previous bug wrt setting left and right pointers after new page creation
@@ -308,9 +306,6 @@ test "regression test 1" {
         //metadata.data.SelectTableMetadata.print();
         try validate_btree(&metadata.data.SelectTableMetadata);
         metadata.data.SelectTableMetadata.deinit();
-
-        //const select_query = Query{ .Select = .{ .table_name = table_name } };
-        //_ = try engine.execute_query(select_query);
     }
 
     std.debug.print("Test success\n", .{});
@@ -391,9 +386,6 @@ test "regressoion test 2" {
         //metadata.data.SelectTableMetadata.print();
         try validate_btree(&metadata.data.SelectTableMetadata);
         metadata.data.SelectTableMetadata.deinit();
-
-        //const select_query = Query{ .Select = .{ .table_name = table_name } };
-        //_ = try engine.execute_query(select_query);
     }
 
     std.debug.print("Test success\n", .{});
@@ -525,6 +517,16 @@ test "stress test randomized inserts on 1000 entries" {
 
     final_metadata.data.SelectTableMetadata.deinit();
 
+    //var arena = std.heap.ArenaAllocator.init(allocator);
+    //const select_query = Query{
+    //    .Select = .{
+    //        .table_name = table_name,
+    //        .allocator = arena.allocator(),
+    //    },
+    //};
+    //_ = try engine.execute_query(select_query);
+    //arena.deinit();
+
     std.debug.print("Test success\n", .{});
 }
 
@@ -652,7 +654,54 @@ test "stress test randomized operations on larger dataset" {
 
     std.debug.print("Phase 1 complete: {} unique keys inserted\n", .{inserted_keys.items.len});
 
-    // Phase 2: Random deletions (delete ~30% of entries)
+    // Phase 2: Random updates (update all inserted entries)
+    std.debug.print("Phase 2: Random updates...\n", .{});
+    for (0..inserted_keys.items.len) |i| {
+        if (inserted_keys.items.len == 0) break;
+
+        const random_index = rand.uintLessThan(usize, inserted_keys.items.len);
+        const key_to_update = inserted_keys.items[random_index];
+
+        // Generate new random values for the update
+        const text_len = rand.uintLessThan(usize, 400) + 100; // 100-499 chars
+        for (text_buffer[0..text_len]) |*char| {
+            char.* = 'a' + rand.uintLessThan(u8, 26);
+        }
+
+        const update_query = Query{ .Update = .{ .table_name = table_name, .values = &.{
+            .{
+                .column_name = "pk",
+                .value = .{ .TEXT = &key_to_update },
+            },
+            .{
+                .column_name = "int_val",
+                .value = .{ .INT = rand.int(i64) },
+            },
+            .{
+                .column_name = "real_val",
+                .value = .{ .REAL = rand.float(f64) },
+            },
+            .{
+                .column_name = "text_val",
+                .value = .{ .TEXT = text_buffer[0..text_len] },
+            },
+        } } };
+
+        const update_response = try engine.execute_query(update_query);
+        assert(!update_response.is_error_result());
+
+        // Validate every 100 updates
+        if (i % 100 == 0) {
+            var metadata = try engine.execute_query(select_metadata_query);
+            try validate_btree(&metadata.data.SelectTableMetadata);
+            metadata.data.SelectTableMetadata.deinit();
+            std.debug.print("Validated update step {}: {} keys updated so far\n", .{ i, i + 1 });
+        }
+    }
+
+    std.debug.print("Phase 2 complete: {} keys updated\n", .{inserted_keys.items.len});
+
+    // Phase 3: Random deletions (delete ~30% of entries)
     std.debug.print("Phase 2: Random deletions...\n", .{});
     const delete_count = inserted_keys.items.len / 3;
     var deleted_count: usize = 0;
@@ -678,10 +727,10 @@ test "stress test randomized operations on larger dataset" {
         }
     }
 
-    std.debug.print("Phase 2 complete: {} keys deleted, {} keys remaining\n", .{ deleted_count, inserted_keys.items.len });
+    std.debug.print("Phase 3 complete: {} keys deleted, {} keys remaining\n", .{ deleted_count, inserted_keys.items.len });
 
     // Phase 3: Mixed operations (insert/delete randomly)
-    std.debug.print("Phase 3: Mixed operations...\n", .{});
+    std.debug.print("Phase 4: Mixed operations...\n", .{});
     for (0..1000) |i| {
         const operation = rand.uintLessThan(u8, 3); // 0=insert, 1=delete, 2=insert
 
@@ -739,10 +788,10 @@ test "stress test randomized operations on larger dataset" {
         }
     }
 
-    std.debug.print("Phase 3 complete: {} keys remaining\n", .{inserted_keys.items.len});
+    std.debug.print("Phase 4 complete: {} keys remaining\n", .{inserted_keys.items.len});
 
     // Phase 4: Stress test with rapid insertions
-    std.debug.print("Phase 4: Rapid insertions stress test...\n", .{});
+    std.debug.print("Phase 5: Rapid insertions stress test...\n", .{});
     for (0..500) |i| {
         var key: [2023]u8 = undefined;
         // Use a more predictable pattern to ensure uniqueness

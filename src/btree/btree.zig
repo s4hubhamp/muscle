@@ -17,7 +17,7 @@ pub const BTree = struct {
     // data type of *key* used inside the btree
     primary_key_data_type: muscle.DataType,
 
-    //
+    // used to store temp state that we will destroy inside btree.deinit()
     arena: std.heap.ArenaAllocator,
 
     pub fn init(
@@ -47,7 +47,7 @@ pub const BTree = struct {
         child_index: u16, // this is the index in `.children` array.
     };
 
-    pub fn search(self: *const BTree, key: []const u8) !std.ArrayList(PathDetail) {
+    fn search_internal(self: *const BTree, key: []const u8) !std.ArrayList(PathDetail) {
         var path = std.ArrayList(PathDetail).init(self.allocator);
         var page_number = self.root_page_number;
         var node = try self.pager.get_page(page.Page, page_number);
@@ -78,7 +78,7 @@ pub const BTree = struct {
     }
 
     pub fn insert(self: *BTree, key: []const u8, cell_bytes: []const u8) !void {
-        var path = try self.search(key);
+        var path = try self.search_internal(key);
         defer path.deinit();
 
         var target_leaf_page = self.root_page_number;
@@ -116,7 +116,7 @@ pub const BTree = struct {
     }
 
     pub fn update(self: *BTree, key: []const u8, cell_bytes: []const u8) !void {
-        var path = try self.search(key);
+        var path = try self.search_internal(key);
         defer path.deinit();
 
         var target_leaf_page = self.root_page_number;
@@ -154,7 +154,7 @@ pub const BTree = struct {
     }
 
     pub fn delete(self: *BTree, key: []const u8) !void {
-        var path = try self.search(key);
+        var path = try self.search_internal(key);
         defer path.deinit();
 
         var target_leaf_page = self.root_page_number;

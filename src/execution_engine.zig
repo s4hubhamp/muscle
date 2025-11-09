@@ -602,6 +602,8 @@ pub const ExecutionEngine = struct {
         tables: []muscle.Table,
         payload: SelectPayload,
     ) !QueryResult {
+        _ = metadata;
+
         var table: ?muscle.Table = null;
         for (tables) |t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -613,7 +615,38 @@ pub const ExecutionEngine = struct {
             return error.TableNotFound;
         }
 
-        var serial: usize = 1;
+        var result_columns = try std.ArrayList(muscle.Column).initCapacity(payload.allocator, payload.columns.len);
+        var result = SelectResult{
+            .columns = result_columns,
+            .rows = try std.ArrayList(std.ArrayList(u8)).initCapacity(
+                payload.allocator,
+                payload.limit,
+            ),
+        };
+
+        const find_column = struct {
+            fn f(
+                columns: []const muscle.Column,
+                column_name: []const u8,
+            ) ?usize {
+                for (columns, 0..) |*col, i| {
+                    if (std.mem.eql(u8, col.name, column_name)) return i;
+                }
+
+                return null;
+            }
+        }.f;
+
+        // validate selected columns and copy inside the results_columns
+        for (payload.columns) |col| {
+            if (find_column(table.?.columns, col)) |i| {
+                try result_columns.append(table.?.columns[i]);
+            } else {
+                return error.ColumnNotFound;
+            }
+        }
+
+        //var serial: usize = 1;
         var curr_page_number = table.?.root;
 
         // find the leftmost leaf node
@@ -624,65 +657,77 @@ pub const ExecutionEngine = struct {
             curr_page = try self.pager.get_page(page.Page, curr_page_number);
         }
 
-        std.debug.print("\n\n*****************************************************************\n", .{});
+        //std.debug.print("\n\n*****************************************************************\n", .{});
 
         // traverse using .right pointers and print rows
         while (true) {
-            std.debug.print("------------------\npage_number: {}, content_size: {}, free_space: {}, num_slots={}, right_child={}, left={}, right={}\n", .{
-                curr_page_number,
-                curr_page.content_size,
-                curr_page.free_space(),
-                curr_page.num_slots,
-                curr_page.right_child,
-                curr_page.left,
-                curr_page.right,
-            });
-            // there shouldn't be any free pages attached to btree
-            assert(curr_page.free_space() != 0);
+            //std.debug.print("------------------\npage_number: {}, content_size: {}, free_space: {}, num_slots={}, right_child={}, left={}, right={}\n", .{
+            //    curr_page_number,
+            //    curr_page.content_size,
+            //    curr_page.free_space(),
+            //    curr_page.num_slots,
+            //    curr_page.right_child,
+            //    curr_page.left,
+            //    curr_page.right,
+            //});
 
             for (0..curr_page.num_slots) |slot_index| {
                 const cell = curr_page.cell_at_slot(@intCast(slot_index));
-                print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page.Page.SlotArrayEntry) });
-                serial += 1;
+                var row_bytes = std.ArrayList(u8).init(payload.allocator);
+
+                //print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page.Page.SlotArrayEntry) });
+                //serial += 1;
 
                 var offset: usize = 0;
-                for (table.?.columns) |column| {
+                for (result_columns.items) |*column| {
                     switch (column.data_type) {
                         .BIN, .TEXT => {
                             const len = std.mem.readInt(usize, cell.content[offset..][0..@sizeOf(usize)], .little);
-                            offset += @sizeOf(usize);
-                            if (len > 10) {
-                                print("  {s}={s}...({d})", .{ column.name, cell.content[offset..][0..10], len });
-                            } else {
-                                print("  {s}={s}", .{ column.name, cell.content[offset..][0..len] });
+
+                            { //offset += @sizeOf(usize);
+                                //if (len > 10) {
+                                //    print("  {s}={s}...({d})", .{ column.name, cell.content[offset..][0..10], len });
+                                //} else {
+                                //    print("  {s}={s}", .{ column.name, cell.content[offset..][0..len] });
+                                //}
                             }
 
+                            try row_bytes.appendSlice(cell.content[offset..(offset + len)]);
                             offset += len;
                         },
                         .INT => {
-                            print("  {s}={}", .{
-                                column.name,
-                                std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little),
-                            });
+                            //print("  {s}={}", .{
+                            //    column.name,
+                            //    std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little),
+                            //});
+
+                            try row_bytes.appendSlice(cell.content[offset..(offset + @sizeOf(i64))]);
                             offset += @sizeOf(i64);
                         },
                         .REAL => {
-                            print("  {s}={}", .{
-                                column.name,
-                                @as(f64, @bitCast(std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little))),
-                            });
+                            //print("  {s}={}", .{
+                            //    column.name,
+                            //    @as(f64, @bitCast(std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little))),
+                            //});
+
+                            try row_bytes.appendSlice(cell.content[offset..(offset + @sizeOf(i64))]);
                             offset += @sizeOf(i64);
                         },
                         .BOOL => {
-                            print(
-                                "  {s}={any}",
-                                .{ column.name, if (cell.content[offset] == 1) true else false },
-                            );
+                            //print(
+                            //    "  {s}={any}",
+                            //    .{ column.name, if (cell.content[offset] == 1) true else false },
+                            //);
+
+                            try row_bytes.appendSlice(cell.content[offset..(offset + 1)]);
                             offset += 1;
                         },
                     }
                 }
-                print("\n", .{});
+
+                row_bytes.shrinkAndFree(row_bytes.items.len);
+                try result.rows.append(row_bytes);
+                //print("\n", .{});
             }
 
             if (curr_page.right == 0) break;
@@ -690,20 +735,20 @@ pub const ExecutionEngine = struct {
             curr_page = try self.pager.get_page(page.Page, curr_page_number);
         }
 
-        print("\n\ndatabase metadata: total_pages: {any} free_pages:{any} first_free_page:{any}", .{
-            metadata.total_pages, metadata.free_pages, metadata.first_free_page,
-        });
+        //print("\n\ndatabase metadata: total_pages: {any} free_pages:{any} first_free_page:{any}", .{
+        //    metadata.total_pages, metadata.free_pages, metadata.first_free_page,
+        //});
 
-        std.debug.print("\n\n*****************************************************************\n\n", .{});
+        //std.debug.print("\n\n*****************************************************************\n\n", .{});
 
-        return QueryResult.success_result(.{ .__void = {} });
+        return QueryResult.success_result(.{ .Select = result });
     }
 
     fn select_table_metadata(
         self: *ExecutionEngine,
         metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
-        payload: SelectPayload,
+        payload: SelectTableMetadata,
     ) !QueryResult {
         _ = metadata;
         var table: ?muscle.Table = null;
@@ -881,7 +926,7 @@ pub const QueryResult = struct {
         //
         // Query Operations
         //
-        // Select: SelectResult,
+        Select: SelectResult,
         SelectTableMetadata: SelectTableMetadataResult,
         SelectDatabaseMetadata: SelectDatabaseMetadataResult,
 
@@ -944,8 +989,16 @@ pub const UpdatePayload = InsertPayload;
 
 const SelectPayload = struct {
     table_name: []const u8,
-    // columns: []const muscle.Column,
-    // limit: usize
+    // this is owner by caller where select will store data
+    allocator: std.mem.Allocator,
+    // zero columns indicates we want all columns
+    columns: []const []const u8 = &[_][]const u8{},
+    // zero limit indicates we want all data
+    limit: usize = 0,
+};
+
+const SelectTableMetadata = struct {
+    table_name: []const u8,
 };
 
 const DeletePayload = struct {
@@ -961,7 +1014,7 @@ pub const Query = union(enum) {
     Update: UpdatePayload,
     Select: SelectPayload,
     Delete: DeletePayload,
-    SelectTableMetadata: SelectPayload,
+    SelectTableMetadata: SelectTableMetadata,
     SelectDatabaseMetadata: void,
 };
 
@@ -971,6 +1024,11 @@ pub const InsertResult = struct {
 
 pub const UpdateResult = struct {
     rows_affected: u32,
+};
+
+pub const SelectResult = struct {
+    columns: std.ArrayList(muscle.Column),
+    rows: std.ArrayList(std.ArrayList(u8)),
 };
 
 pub const SelectDatabaseMetadataResult = struct {

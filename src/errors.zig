@@ -6,6 +6,7 @@ pub const ClientError = error{
     ColumnDoesNotExist,
     DuplicateColumnName,
     DuplicateColumns,
+    ColumnNotFound,
     DuplicateKey,
     KeyNotFound,
 
@@ -54,6 +55,7 @@ pub fn classify_error(err: anyerror) ErrorClassification {
         error.ColumnDoesNotExist,
         error.DuplicateColumnName,
         error.DuplicateColumns,
+        error.ColumnNotFound,
         error.DuplicateKey,
         error.KeyNotFound,
         error.TypeMismatch,
