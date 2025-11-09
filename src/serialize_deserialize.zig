@@ -30,34 +30,34 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
 
 pub fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
     switch (val) {
-        .BIN => |blob| {
+        .bin => |blob| {
             // len will take usize bytes
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(usize, &tmp, blob.len, .little);
             try buffer.appendSlice(&tmp);
             try buffer.appendSlice(blob);
         },
-        .INT => |i| {
+        .int => |i| {
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(i64, &tmp, i, .little);
             try buffer.appendSlice(&tmp);
         },
-        .REAL => |i| {
+        .real => |i| {
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(i64, &tmp, @as(i64, @bitCast(i)), .little);
             try buffer.appendSlice(&tmp);
         },
-        .BOOL => |b| {
+        .bool => |b| {
             try buffer.append(if (b) 1 else 0);
         },
-        .TEXT => |str| {
+        .txt => |str| {
             // len will take usize bytes
             var tmp: [8]u8 = undefined; // TODO: Maybe we don't need this to be usize?
             std.mem.writeInt(usize, &tmp, str.len, .little);
             try buffer.appendSlice(&tmp);
             try buffer.appendSlice(str);
         },
-        .NULL => {
+        .null => {
             // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example
             unreachable;
         },
@@ -67,24 +67,24 @@ pub fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE)
 // @Todo we don't use this right now!
 pub fn deserialize_value(buffer: []const u8, data_type: muscle.DataType) muscle.Value {
     switch (data_type) {
-        .INT => {
+        .int => {
             // we don't have variable sized integers yet
             assert(buffer.len >= @sizeOf(i64));
-            return .{ .INT = std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little) };
+            return .{ .int = std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little) };
         },
-        .REAL => {
+        .real => {
             // we don't have variable sized floats yet
             assert(buffer.len >= @sizeOf(f64));
-            return .{ .INT = @as(f64, @bitCast(std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little))) };
+            return .{ .int = @as(f64, @bitCast(std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little))) };
         },
         // strings and blobs are compared lexicographically
-        .TEXT => {
+        .txt => {
             const len = std.mem.readInt(usize, buffer[0..@sizeOf(usize)], .little);
-            return .{ .TEXT = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
+            return .{ .txt = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
         },
-        .BIN => {
+        .bin => {
             const len = std.mem.readInt(usize, buffer[0..@sizeOf(usize)], .little);
-            return .{ .BIN = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
+            return .{ .bin = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
         },
         else => {
             // we don't support booleans as primary keys right now
@@ -100,7 +100,7 @@ pub fn serialize_rowid(buffer: *[8]u8, id: muscle.RowId) !void {
 
 pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []const u8) std.math.Order {
     switch (data_type) {
-        .INT => {
+        .int => {
             // we don't have variable sized integers yet
             assert(a.len == @sizeOf(i64));
             assert(a.len == b.len);
@@ -108,7 +108,7 @@ pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []
             const _b = std.mem.readInt(i64, @ptrCast(b), .little);
             return std.math.order(_a, _b);
         },
-        .REAL => {
+        .real => {
             // we don't have variable sized floats yet
             assert(a.len == @sizeOf(f64));
             assert(a.len == b.len);
@@ -117,9 +117,29 @@ pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []
             return std.math.order(_a, _b);
         },
         // strings and blobs are compared lexicographically
-        .TEXT, .BIN => {
-            // first 8 btyes is length and later we have actual text data
-            return std.mem.order(u8, a[@sizeOf(usize)..], b[@sizeOf(usize)..]);
+        .txt, .bin => {
+            //
+            // @Note we don't need to determine length as a and b are only key and value slices.
+            // But these asserts are faily cheap so we are gonna keep them as is.
+            //
+            // Ensure we have at least the length prefix
+            assert(a.len >= @sizeOf(usize));
+            assert(b.len >= @sizeOf(usize));
+
+            // Read the lengths
+            const len_a = std.mem.readInt(usize, a[0..@sizeOf(usize)], .little);
+            const len_b = std.mem.readInt(usize, b[0..@sizeOf(usize)], .little);
+
+            // Ensure the buffers contain the full data
+            assert(a.len >= @sizeOf(usize) + len_a);
+            assert(b.len >= @sizeOf(usize) + len_b);
+
+            // Extract the actual data (skip the length prefix)
+            const data_a = a[@sizeOf(usize) .. @sizeOf(usize) + len_a];
+            const data_b = b[@sizeOf(usize) .. @sizeOf(usize) + len_b];
+
+            // Compare lexicographically
+            return std.mem.order(u8, data_a, data_b);
         },
         else => {
             // we don't support booleans as primary keys right now

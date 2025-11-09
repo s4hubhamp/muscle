@@ -36,14 +36,14 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         const table_columns = [_]muscle.Column{
             muscle.Column{
                 .name = "pk",
-                .data_type = muscle.DataType{ .TEXT = 2023 }, // 2031(max) - 8(Str len after serialization)
+                .data_type = muscle.DataType{ .txt = 2023 }, // 2031(max) - 8(Str len after serialization)
             },
             .{
                 .name = "datetime",
-                .data_type = muscle.DataType{ .INT = {} },
+                .data_type = muscle.DataType{ .int = {} },
             },
         };
-        const create_table_query: Query = Query{ .CreateTable = .{
+        const create_table_query: Query = Query{ .create_table = .{
             .table_name = table_name,
             .columns = &table_columns,
             .primary_key_column_index = 0,
@@ -53,21 +53,21 @@ test "test tree operations on text primary key. Every leaf node can hold max one
 
     const get_insert_query = struct {
         fn f(pk: []const u8) Query {
-            return Query{ .Insert = .{ .table_name = table_name, .values = &.{
+            return Query{ .insert = .{ .table_name = table_name, .values = &.{
                 .{
                     .column_name = "pk",
-                    .value = .{ .TEXT = pk },
+                    .value = .{ .txt = pk },
                 },
                 .{
                     .column_name = "datetime",
-                    .value = .{ .INT = @intCast(std.time.nanoTimestamp()) },
+                    .value = .{ .int = @intCast(std.time.nanoTimestamp()) },
                 },
             } } };
         }
     }.f;
 
-    var delete_query: Query = Query{ .Delete = .{ .table_name = table_name, .key = undefined } };
-    const select_metadata_query = Query{ .SelectTableMetadata = .{
+    var delete_query: Query = Query{ .delete = .{ .table_name = table_name, .key = undefined } };
+    const select_metadata_query = Query{ .select_table_info = .{
         .table_name = table_name,
         .allocator = arena.allocator(),
     } };
@@ -76,17 +76,17 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // Case: Inserting inside root when root is a leaf node.
     _ = try engine.execute_query(get_insert_query("a"));
     var metadata = try engine.execute_query(select_metadata_query);
-    try validate_btree(&metadata.data.SelectTableMetadata);
-    assert(metadata.data.SelectTableMetadata.btree_height == 1);
-    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 1);
+    try validate_btree(&metadata.data.select_table_info);
+    assert(metadata.data.select_table_info.btree_height == 1);
+    assert(metadata.data.select_table_info.btree_leaf_cells == 1);
 
     // Case: Deleting when root is leaf node
-    delete_query.Delete.key = .{ .TEXT = "a" };
+    delete_query.delete.key = .{ .txt = "a" };
     _ = try engine.execute_query(delete_query);
     metadata = try engine.execute_query(select_metadata_query);
-    try validate_btree(&metadata.data.SelectTableMetadata);
-    assert(metadata.data.SelectTableMetadata.btree_height == 1);
-    assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 0);
+    try validate_btree(&metadata.data.select_table_info);
+    assert(metadata.data.select_table_info.btree_height == 1);
+    assert(metadata.data.select_table_info.btree_leaf_cells == 0);
 
     // Case: Splitting root node
     {
@@ -95,9 +95,9 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         for (&txt) |*char| char.* = 66;
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        metadata.data.SelectTableMetadata.btree_height = 2;
-        metadata.data.SelectTableMetadata.btree_leaf_cells = 2;
+        try validate_btree(&metadata.data.select_table_info);
+        metadata.data.select_table_info.btree_height = 2;
+        metadata.data.select_table_info.btree_leaf_cells = 2;
     }
 
     // tree state
@@ -107,12 +107,12 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // Case: Deleting leaf node which leads to root becoming empty
     {
         const txt = [_]u8{65} ** 2023;
-        delete_query.Delete.key = .{ .TEXT = &txt };
+        delete_query.delete.key = .{ .txt = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 1);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 1);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 1);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 1);
     }
 
     // tree state
@@ -125,9 +125,9 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         for (&txt) |*char| char.* = 67;
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 2);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 2);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 3);
     }
 
     // tree state
@@ -139,9 +139,9 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         var txt = [_]u8{68} ** 2023;
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 3);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 4);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 3);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 4);
     }
 
     // tree state
@@ -152,54 +152,54 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // Case: Internal node merge
     {
         var txt = [_]u8{66} ** 2023;
-        delete_query.Delete.key = .{ .TEXT = &txt };
+        delete_query.delete.key = .{ .txt = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 2);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 2);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 3);
 
         // insert B back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
+        try validate_btree(&metadata.data.select_table_info);
 
         // Delete A
         for (&txt) |*char| char.* = 65;
-        delete_query.Delete.key = .{ .TEXT = &txt };
+        delete_query.delete.key = .{ .txt = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 2);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 2);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 3);
 
         // insert A back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
+        try validate_btree(&metadata.data.select_table_info);
 
         // Delete C
         for (&txt) |*char| char.* = 67;
-        delete_query.Delete.key = .{ .TEXT = &txt };
+        delete_query.delete.key = .{ .txt = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 2);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 2);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 3);
 
         // insert C back
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
+        try validate_btree(&metadata.data.select_table_info);
 
         // Delete D
         for (&txt) |*char| char.* = 68;
-        delete_query.Delete.key = .{ .TEXT = &txt };
+        delete_query.delete.key = .{ .txt = &txt };
         _ = try engine.execute_query(delete_query);
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 2);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 3);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 2);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 3);
     }
 
     // tree state
@@ -211,10 +211,10 @@ test "test tree operations on text primary key. Every leaf node can hold max one
         var txt = [_]u8{68} ** 2023;
         _ = try engine.execute_query(get_insert_query(&txt));
         metadata = try engine.execute_query(select_metadata_query);
-        try validate_btree(&metadata.data.SelectTableMetadata);
-        assert(metadata.data.SelectTableMetadata.btree_height == 3);
-        assert(metadata.data.SelectTableMetadata.btree_internal_cells == 3);
-        assert(metadata.data.SelectTableMetadata.btree_leaf_cells == 4);
+        try validate_btree(&metadata.data.select_table_info);
+        assert(metadata.data.select_table_info.btree_height == 3);
+        assert(metadata.data.select_table_info.btree_internal_cells == 3);
+        assert(metadata.data.select_table_info.btree_leaf_cells == 4);
     }
 
     // tree state
@@ -244,7 +244,7 @@ test "regression test 1" {
 
     const table_name = "stress_test";
     const select_metadata_query = Query{
-        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
     };
     const insert_keys: [6][]const u8 = .{
         "TCMMYDZPMXXZRALNIDLSFKOFGQFNXBZCGVAFEYEKDGFUMVETYJHRPACVHHGRETBKQYEWHPYSUAUMAENOJGZTRUCHGECHCFYJONDMYLDBOXNJVLUTKSWRNCENZVLSWIJXKOLBKRCHMSMOIIOSUVBXWZJPWCWMRXRGFJKEVTDWSMFYJQTQVFNPUHACVMMWDVUDTZBBQGYYJFOPWBVGGQXJVTXUVNBVUZDPLXHUZMYICKACYAITIMCGUSVIAIUBZHSPWJHTDNBTIAIHSFFBZHBXJRKFYRWTTUGOCOFMAFZKBIJWQJVHIGPUCPIQVNKQOQGVKDLAYSCBRFOVIUQZBJUSGBRJDXAXJQUHUXTQDPZKFEJNPQEFPSTBBJQBHFZHCIZYPJNWBGGJKQVLIGRDNKNIAZEHWPQVMWPDWMIQQBASIENVZNNPOCWNTBKOPRARIZVSIBFFNAGRVLIMILXFUZZPKLAOIOXMJXBWVFXOIQBMGOBIEBKMXGUFOOCFPKEYQNEDHVXQWXIJHWHJZRGJEXYUUGEGKZWQCBHGHWKGKMWHTFRTMEMGHUFHBPXTAGKFYLWGKHWBKTZJHXKDCUMIGGDQWEPLTHXLQWGPRIAFUVSOHZIEVVOOPRXUOXDITOFSFFYKCONYFXRWMRWYJNJCAWFWQQHUPYMLAKPTORLEFLTVNMWSCXBZDLJAUSHGUEHIMRWYHOKHCNEXZODUBHOFIDZDTEQFHGMZARAZGTFUDNRKKNUDWDDEFLJHCIJDRIGNTVCWOPNRNCSPJRMDMOCLJJCIYVEWNZSNRNNQECPVLZCWQOKRWCIMZCDOMDJFNEOYBNWVOYRDVBSPFLQKASJMTADALPDJNMYPISFOWELOREWXWKZFTTPSBKEELBOZWYFRPFXPVOEZQMZPXJLQQXZMCBWIRBUARAKUWAITQIYXSKNCXNADZBUQWFHQQXHAYTYWNOWZBMOZMQPIAURCNHMQIEXBJRJCGIMNXTZNPPMOMAUFKZUALHLXELUJAJPUZYZTSGWGHGHIJPMSRFHNTOFEEBUKDDDCZUUOXQQDTRGDINXVEHYMZXTVCVGHOXBGJPSGSPEMZMQCUBNNMZAVJYEQPCOQRFQWPACZPXNJXLAZQAZJCSUQJXQGKXWCRLRRWUPFQOXPCVEKGDDVYBQTGSBNSUKUVYNUXBHEXGMWFMDGVFPEIKVJQAYVOEVPNCBMIGPQVPXBOZXRPNAWKFXWQUJFUMYYZHQRMLDIPQHTKFNSHWWGSUXKLSHGFCRDCCEFRSTAWBHEMYIVLWSTKUMONFYLDOLXWTDYOXPPHHBZQXMMMWRSHUMNJLBAVERAREMSLFXGPSILDPAPZHVBLCYLCARXQFSSHKTLBSKQAEFYVRRKIJDQVTMTHFWXAIKBUHDRRRRNSVPYIGMNSBFZJQXJSAJEKQGWTTLGJBDBANZQANHCHIRELQNHRGSLXKWBPMBRKVGOPSYDLAECYXMSZVBIMLKAWKSRPIFADJXRIUXDAFWJYZGDLSXYVFPNFHLDDYYQLJNCNEYGIJZOZPKSEBXEYRGFSDRKOWSMMKJCTHEZFOLLESWGKECXEAAYRQLJBHIYYARYVDXPKCLPYZQPYGARZOYJGJLPNMUBPDBQHRZPWTPGIXBNQWOGVCEWXWPDWPIUIZKFAJOUBZTSNZFXACYUHMKLPFGDAZMMZOEAAEBHDPWJWEPUXXNOZYYRMKCCADVBQEDERXPWXDABELXYVHFLVULUURVHQZHKFLKMJSNSYSOCHPPSWMLHQHBATEGNYEXQEUOOBZHZQIIMANWBXLAHCUSAMYOVYUEILYMXOJKKDHXRDYBWWJXAHZLZKZHDGNAAHTAJRJBMLRQHPDSAMNJSAYSSVWBDNEBEHZDXZYRRJAPFNMHNUULOYCULDJHMHBJCLAKJFGLLIQHLBAQPOAIBHTNPMJRJVNXBMPSDPSNWIWJABXCBDHIIZKJKKGFVLVBCPNOOAFXLJYJSBESZNSIAZMCOHCVYOPHBUFTDWJDOXGLDHPZ",
@@ -259,18 +259,18 @@ test "regression test 1" {
         const table_columns = [_]muscle.Column{
             muscle.Column{
                 .name = "pk",
-                .data_type = muscle.DataType{ .TEXT = 2023 }, // Longer keys
+                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
             },
             .{
                 .name = "int",
-                .data_type = muscle.DataType{ .INT = {} },
+                .data_type = muscle.DataType{ .int = {} },
             },
             .{
                 .name = "real",
-                .data_type = muscle.DataType{ .REAL = {} },
+                .data_type = muscle.DataType{ .real = {} },
             },
         };
-        const create_table_query: Query = Query{ .CreateTable = .{
+        const create_table_query: Query = Query{ .create_table = .{
             .table_name = table_name,
             .columns = &table_columns,
             .primary_key_column_index = 0,
@@ -280,18 +280,18 @@ test "regression test 1" {
 
     const rand = std.crypto.random;
     for (insert_keys) |str| {
-        const insert_query = Query{ .Insert = .{ .table_name = table_name, .values = &.{
+        const insert_query = Query{ .insert = .{ .table_name = table_name, .values = &.{
             .{
                 .column_name = "pk",
-                .value = .{ .TEXT = str },
+                .value = .{ .txt = str },
             },
             .{
                 .column_name = "int",
-                .value = .{ .INT = rand.int(i64) },
+                .value = .{ .int = rand.int(i64) },
             },
             .{
                 .column_name = "real",
-                .value = .{ .REAL = rand.float(f64) },
+                .value = .{ .real = rand.float(f64) },
             },
         } } };
 
@@ -300,8 +300,8 @@ test "regression test 1" {
         //std.debug.print("insert_result: {any}\n", .{insert_result});
 
         var metadata = try engine.execute_query(select_metadata_query);
-        //metadata.data.SelectTableMetadata.print();
-        try validate_btree(&metadata.data.SelectTableMetadata);
+        //metadata.data.select_table_info .print();
+        try validate_btree(&metadata.data.select_table_info);
     }
 
     std.debug.print("Test success\n", .{});
@@ -327,7 +327,7 @@ test "regressoion test 2" {
 
     const table_name = "stress_test";
     const select_metadata_query = Query{
-        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
     };
     const insert_keys: [7][]const u8 = .{
         "JLJCGFUPJQQPHZSYLYKZVFDUJDPDEHJHJAKOPQDFJDBTQKTVJLTAWHMHSLXFYFCDJYWDFCBWFJULCJNXPSUEJXIFWVZPDDKXHFSBPKVTLLNWYFANTWLLVVFHDFTDUZNZGFJZDPYWRXPVONHLDUFJARBIFNVYFUIGNDGSVEAHKOIQXWFNFYVZMIQXJTCELQXTJIYUIGLZSQHQHAAAHAZDAYPUQWRRBYXUXJDYJMEIBFTKVCUMUXJPRHUKEFGMXEJYKGYENZWPSUQLJLUBJIAPFQTFNAUJXKQREQFHFIHYCNPEDLGHPUAWKCAZRBJNFKQGRTAPMUSNRTDUDDMEEYZKTIQWYAEDARJAQNYBRPISOQJDOZHLTLEPCNVXDCANACDDHEAGIJUYMHPWCHQVVBAQJQGETTBNSZPENUIRZLYIYHRSKXLXVNBXBUJMAHFBWUGHCHPIDDWDMEKCDYFRBOKJDRFQGWOJMNASMWBKAGNYRGAOCPXICQZHRXSDZAHTKXAPZNLCMGRFNYVNORZCTCSLGWZZFQCKWBARIMJRRRDSZIFDBFKZEOUKIUUNHAKVCYWMFJCSGKMVICLGQLJODQGIUMAWSWGRWWHSGBBDZBBTKDIFREETMMCAPLCGHLCFIFORKBLIBJORJNQNIBIQFDDHWLVMTCABTMWNBDUROBITULTQLFTSKNULFHULKKFBPYTNNRWPOKDFRWPRAVINPDPTEZPMQVDKCOBBKRGLGRUFCIKJNABAFPNYSJDBXYWTKRDHDCMPQGKAJWXOUHKNUHFDFXKKXLGRANJVGJRVINHLNKTFEIORJQXTCPGDUIAPVSBAVYELRYOTHHZRKKPVPIVNERAIQRXMNYWMMQLTKZNUJSHVZFHCDGAVABLYXNHAILGNFRINVNVUVGIUWDVVBNJSPAFLBDJTZHCHODXHOHRQALVAWSCKFTZTIBDCZQJHPOSADXMYREJVDRBXVAJLDLIRQUYEWRHHPDEZYQPXEKPAAUGJGBZBJGTAWFVULHUQPYOTGDAFGLEJDKFAYBRJFMNAGWIXBPGXGJDIHPPRJRKJAWXPOXIVPTYAHLVFQSYUCYYBHNICGTGZWVLYLOXRNLQLPWMUKOJIBKAYBTDYYLOEZYCXUUDRCMLXELPTIAAYHIUCOLOEVBYCBYQGGMVDYYSGITWQDOSIFKULGFIPOQCCWLEPXWXBOHVFWQZKTPRFSOOZRKQQWQLHEMZDZLMCZPBLTCFKFUZQXFTFZKMWVZEDWDTTZDWNHALSXJPGRGXFDCPVHSLTGEVLQZDHXSBGGLTQNLXABDWJTUOPQDROXPEGNHHNOFGTOGRZXTROWJAGDMTFUMSYPYWNYRHSKSJCKXSFSNMZQUEJLYSLKDJQWJMGMJMCUVWVNBDALCMFBQAKTGBJJBROXCPGIIKEQKLOFPSBINCWLWXSMSYZRHPMYAPXOHIHGFRBQRSNGCLVULYRRKVQOORIDZAAJZBIZNYMYFVOQRDTDTIVBZBEKKPVUHHOEKHHKWCLAYVOPOCYLFHSVRYUKPDRPSEDZAZDUZDVKYQBCSIVRFGWVKNBVVJFFUZUDNCBIICLKJMTRGSMRIMKPKBNNVFGIHUSYROLTEVTUDHUTYXHOKUFDTRBGCGHNFZOIGFHCFXGWLUMPFFHKXKMGSIKMFBZZRWLEUUDRCAWCEMRAWBIKHIRRTCXGEDKJHHLOUKFSBPEOTFQXWWFBQNPORKLGCTNXMROSVWBINAHSXVPUTSSVHIUBVQHVDYBPNZSYIORPKDDDCYKLQJVUEUULTQCMKDQIYNIGMCYCTKGSFAAUJWBSTDJGGNTGATKQOYIENZVQPBOTGCFRTGTGHDPTWTDMSBQSTYKQTVYMNRKMSIBCOTJDZREDMEYMPMCPGLAHDPQCHDCQWCTHVOJAPUWRUUMNWCQGECHJAKHRMAEYHRQIWXPATVEOBLZEVTQCTVQAXJJOFKMYIOVBODRIPPEGYWNRVYZIQXNXKBUCISAZLLCRXNLMJROFXDRGQVMKEC",
@@ -343,18 +343,18 @@ test "regressoion test 2" {
         const table_columns = [_]muscle.Column{
             muscle.Column{
                 .name = "pk",
-                .data_type = muscle.DataType{ .TEXT = 2023 }, // Longer keys
+                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
             },
             .{
                 .name = "int",
-                .data_type = muscle.DataType{ .INT = {} },
+                .data_type = muscle.DataType{ .int = {} },
             },
             .{
                 .name = "real",
-                .data_type = muscle.DataType{ .REAL = {} },
+                .data_type = muscle.DataType{ .real = {} },
             },
         };
-        const create_table_query: Query = Query{ .CreateTable = .{
+        const create_table_query: Query = Query{ .create_table = .{
             .table_name = table_name,
             .columns = &table_columns,
             .primary_key_column_index = 0,
@@ -364,18 +364,18 @@ test "regressoion test 2" {
 
     const rand = std.crypto.random;
     for (insert_keys) |str| {
-        const insert_query = Query{ .Insert = .{ .table_name = table_name, .values = &.{
+        const insert_query = Query{ .insert = .{ .table_name = table_name, .values = &.{
             .{
                 .column_name = "pk",
-                .value = .{ .TEXT = str },
+                .value = .{ .txt = str },
             },
             .{
                 .column_name = "int",
-                .value = .{ .INT = rand.int(i64) },
+                .value = .{ .int = rand.int(i64) },
             },
             .{
                 .column_name = "real",
-                .value = .{ .REAL = rand.float(f64) },
+                .value = .{ .real = rand.float(f64) },
             },
         } } };
 
@@ -384,8 +384,8 @@ test "regressoion test 2" {
         //std.debug.print("insert_result: {any}\n", .{insert_result});
 
         var metadata = try engine.execute_query(select_metadata_query);
-        //metadata.data.SelectTableMetadata.print();
-        try validate_btree(&metadata.data.SelectTableMetadata);
+        //metadata.data.select_table_info .print();
+        try validate_btree(&metadata.data.select_table_info);
     }
 
     std.debug.print("Test success\n", .{});
@@ -415,18 +415,18 @@ test "stress test randomized inserts on 1000 entries" {
         const table_columns = [_]muscle.Column{
             muscle.Column{
                 .name = "pk",
-                .data_type = muscle.DataType{ .TEXT = 2023 }, // Longer keys
+                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
             },
             .{
                 .name = "int",
-                .data_type = muscle.DataType{ .INT = {} },
+                .data_type = muscle.DataType{ .int = {} },
             },
             .{
                 .name = "real",
-                .data_type = muscle.DataType{ .REAL = {} },
+                .data_type = muscle.DataType{ .real = {} },
             },
         };
-        const create_table_query: Query = Query{ .CreateTable = .{
+        const create_table_query: Query = Query{ .create_table = .{
             .table_name = table_name,
             .columns = &table_columns,
             .primary_key_column_index = 0,
@@ -437,18 +437,18 @@ test "stress test randomized inserts on 1000 entries" {
     const get_insert_query = struct {
         fn f(pk: []const u8) Query {
             const rand = std.crypto.random;
-            return Query{ .Insert = .{ .table_name = table_name, .values = &.{
+            return Query{ .insert = .{ .table_name = table_name, .values = &.{
                 .{
                     .column_name = "pk",
-                    .value = .{ .TEXT = pk },
+                    .value = .{ .txt = pk },
                 },
                 .{
                     .column_name = "int",
-                    .value = .{ .INT = rand.int(i64) },
+                    .value = .{ .int = rand.int(i64) },
                 },
                 .{
                     .column_name = "real",
-                    .value = .{ .REAL = rand.float(f64) },
+                    .value = .{ .real = rand.float(f64) },
                 },
             } } };
         }
@@ -456,7 +456,7 @@ test "stress test randomized inserts on 1000 entries" {
 
     const rand = std.crypto.random;
     const select_metadata_query = Query{
-        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
     };
 
     var inserted_keys = std.ArrayList([2023]u8).init(allocator);
@@ -486,7 +486,7 @@ test "stress test randomized inserts on 1000 entries" {
 
         if (exists) {
             assert(insert_response.is_error_result());
-            assert(insert_response.data.Error.error_code == error.DuplicateKey);
+            assert(insert_response.data.err.error_code == error.DuplicateKey);
             // Don't count this towards successful inserts
         } else {
             // This should be a successful insert
@@ -497,12 +497,12 @@ test "stress test randomized inserts on 1000 entries" {
             // Validate every 100 successful insertions
             if (successful_inserts % 100 == 0) {
                 var metadata = try engine.execute_query(select_metadata_query);
-                try validate_btree(&metadata.data.SelectTableMetadata);
+                try validate_btree(&metadata.data.select_table_info);
                 std.debug.print("Validated at {} successful inserts (attempt {}): Height {}, Leaf cells {}\n", .{
                     successful_inserts,
                     total_attempts,
-                    metadata.data.SelectTableMetadata.btree_height,
-                    metadata.data.SelectTableMetadata.btree_leaf_cells,
+                    metadata.data.select_table_info.btree_height,
+                    metadata.data.select_table_info.btree_leaf_cells,
                 });
             }
         }
@@ -510,14 +510,14 @@ test "stress test randomized inserts on 1000 entries" {
 
     // Final validation
     var final_metadata = try engine.execute_query(select_metadata_query);
-    try validate_btree(&final_metadata.data.SelectTableMetadata);
+    try validate_btree(&final_metadata.data.select_table_info);
 
     std.debug.print("Test completed successfully!\n", .{});
     std.debug.print("  Successful inserts: {}\n", .{successful_inserts});
     std.debug.print("  Total attempts: {}\n", .{total_attempts});
     std.debug.print("  Duplicate attempts: {}\n", .{total_attempts - successful_inserts});
-    std.debug.print("  Final tree height: {}\n", .{final_metadata.data.SelectTableMetadata.btree_height});
-    std.debug.print("  Final leaf cells: {}\n", .{final_metadata.data.SelectTableMetadata.btree_leaf_cells});
+    std.debug.print("  Final tree height: {}\n", .{final_metadata.data.select_table_info.btree_height});
+    std.debug.print("  Final leaf cells: {}\n", .{final_metadata.data.select_table_info.btree_leaf_cells});
 
     //var arena = std.heap.ArenaAllocator.init(allocator);
     //const select_query = Query{
@@ -556,22 +556,22 @@ test "stress test randomized operations on larger dataset" {
         const table_columns = [_]muscle.Column{
             muscle.Column{
                 .name = "pk",
-                .data_type = muscle.DataType{ .TEXT = 2023 }, // Longer keys
+                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
             },
             .{
                 .name = "int_val",
-                .data_type = muscle.DataType{ .INT = {} },
+                .data_type = muscle.DataType{ .int = {} },
             },
             .{
                 .name = "real_val",
-                .data_type = muscle.DataType{ .REAL = {} },
+                .data_type = muscle.DataType{ .real = {} },
             },
             .{
                 .name = "text_val",
-                .data_type = muscle.DataType{ .TEXT = 500 },
+                .data_type = muscle.DataType{ .txt = 500 },
             },
         };
-        const create_table_query: Query = Query{ .CreateTable = .{
+        const create_table_query: Query = Query{ .create_table = .{
             .table_name = table_name,
             .columns = &table_columns,
             .primary_key_column_index = 0,
@@ -581,31 +581,31 @@ test "stress test randomized operations on larger dataset" {
 
     const get_insert_query = struct {
         fn f(pk: []const u8, int_val: i64, real_val: f64, text_val: []const u8) Query {
-            return Query{ .Insert = .{ .table_name = table_name, .values = &.{
+            return Query{ .insert = .{ .table_name = table_name, .values = &.{
                 .{
                     .column_name = "pk",
-                    .value = .{ .TEXT = pk },
+                    .value = .{ .txt = pk },
                 },
                 .{
                     .column_name = "int_val",
-                    .value = .{ .INT = int_val },
+                    .value = .{ .int = int_val },
                 },
                 .{
                     .column_name = "real_val",
-                    .value = .{ .REAL = real_val },
+                    .value = .{ .real = real_val },
                 },
                 .{
                     .column_name = "text_val",
-                    .value = .{ .TEXT = text_val },
+                    .value = .{ .txt = text_val },
                 },
             } } };
         }
     }.f;
 
     const rand = std.crypto.random;
-    var delete_query: Query = Query{ .Delete = .{ .table_name = table_name, .key = undefined } };
+    var delete_query: Query = Query{ .delete = .{ .table_name = table_name, .key = undefined } };
     const select_metadata_query = Query{
-        .SelectTableMetadata = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
     };
 
     var inserted_keys = std.ArrayList([2023]u8).init(allocator);
@@ -645,14 +645,14 @@ test "stress test randomized operations on larger dataset" {
 
         if (exists) {
             assert(insert_response.is_error_result());
-            assert(insert_response.data.Error.error_code == error.DuplicateKey);
+            assert(insert_response.data.err.error_code == error.DuplicateKey);
         } else {
             try inserted_keys.append(key);
 
             // Validate every 100 insertions
             if (i % 100 == 0) {
                 var metadata = try engine.execute_query(select_metadata_query);
-                try validate_btree(&metadata.data.SelectTableMetadata);
+                try validate_btree(&metadata.data.select_table_info);
 
                 std.debug.print("Validated at step {}: {} keys inserted\n", .{ i, inserted_keys.items.len });
             }
@@ -675,22 +675,22 @@ test "stress test randomized operations on larger dataset" {
             char.* = 'a' + rand.uintLessThan(u8, 26);
         }
 
-        const update_query = Query{ .Update = .{ .table_name = table_name, .values = &.{
+        const update_query = Query{ .update = .{ .table_name = table_name, .values = &.{
             .{
                 .column_name = "pk",
-                .value = .{ .TEXT = &key_to_update },
+                .value = .{ .txt = &key_to_update },
             },
             .{
                 .column_name = "int_val",
-                .value = .{ .INT = rand.int(i64) },
+                .value = .{ .int = rand.int(i64) },
             },
             .{
                 .column_name = "real_val",
-                .value = .{ .REAL = rand.float(f64) },
+                .value = .{ .real = rand.float(f64) },
             },
             .{
                 .column_name = "text_val",
-                .value = .{ .TEXT = text_buffer[0..text_len] },
+                .value = .{ .txt = text_buffer[0..text_len] },
             },
         } } };
 
@@ -700,7 +700,7 @@ test "stress test randomized operations on larger dataset" {
         // Validate every 100 updates
         if (i % 100 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
-            try validate_btree(&metadata.data.SelectTableMetadata);
+            try validate_btree(&metadata.data.select_table_info);
 
             std.debug.print("Validated update step {}: {} keys updated so far\n", .{ i, i + 1 });
         }
@@ -719,7 +719,7 @@ test "stress test randomized operations on larger dataset" {
         const random_index = rand.uintLessThan(usize, inserted_keys.items.len);
         const key_to_delete = inserted_keys.swapRemove(random_index);
 
-        delete_query.Delete.key = .{ .TEXT = &key_to_delete };
+        delete_query.delete.key = .{ .txt = &key_to_delete };
         const delete_response = try engine.execute_query(delete_query);
         assert(!delete_response.is_error_result());
 
@@ -728,7 +728,7 @@ test "stress test randomized operations on larger dataset" {
         // Validate every 50 deletions
         if (i % 50 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
-            try validate_btree(&metadata.data.SelectTableMetadata);
+            try validate_btree(&metadata.data.select_table_info);
 
             std.debug.print("Validated deletion step {}: {} keys remaining\n", .{ i, inserted_keys.items.len });
         }
@@ -746,7 +746,7 @@ test "stress test randomized operations on larger dataset" {
             const random_index = rand.uintLessThan(usize, inserted_keys.items.len);
             const key_to_delete = inserted_keys.swapRemove(random_index);
 
-            delete_query.Delete.key = .{ .TEXT = &key_to_delete };
+            delete_query.delete.key = .{ .txt = &key_to_delete };
             const delete_response = try engine.execute_query(delete_query);
             assert(!delete_response.is_error_result());
         } else {
@@ -780,7 +780,7 @@ test "stress test randomized operations on larger dataset" {
 
             if (exists) {
                 assert(insert_response.is_error_result());
-                assert(insert_response.data.Error.error_code == error.DuplicateKey);
+                assert(insert_response.data.err.error_code == error.DuplicateKey);
             } else {
                 try inserted_keys.append(key);
             }
@@ -789,7 +789,7 @@ test "stress test randomized operations on larger dataset" {
         // Validate every 100 operations
         if (i % 100 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
-            try validate_btree(&metadata.data.SelectTableMetadata);
+            try validate_btree(&metadata.data.select_table_info);
 
             std.debug.print("Validated mixed operation step {}: {} keys\n", .{ i, inserted_keys.items.len });
         }
@@ -826,20 +826,20 @@ test "stress test randomized operations on larger dataset" {
         // Validate every 50 insertions
         if (i % 50 == 0) {
             var metadata = try engine.execute_query(select_metadata_query);
-            try validate_btree(&metadata.data.SelectTableMetadata);
+            try validate_btree(&metadata.data.select_table_info);
         }
     }
 
     // Final comprehensive validation
     var final_metadata = try engine.execute_query(select_metadata_query);
-    try validate_btree(&final_metadata.data.SelectTableMetadata);
+    try validate_btree(&final_metadata.data.select_table_info);
 
     std.debug.print("Final tree statistics:\n", .{});
-    std.debug.print("  Height: {}\n", .{final_metadata.data.SelectTableMetadata.btree_height});
-    std.debug.print("  Leaf cells: {}\n", .{final_metadata.data.SelectTableMetadata.btree_leaf_cells});
-    std.debug.print("  Internal cells: {}\n", .{final_metadata.data.SelectTableMetadata.btree_internal_cells});
-    std.debug.print("  Leaf pages: {}\n", .{final_metadata.data.SelectTableMetadata.btree_leaf_pages});
-    std.debug.print("  Internal pages: {}\n", .{final_metadata.data.SelectTableMetadata.btree_internal_pages});
+    std.debug.print("  Height: {}\n", .{final_metadata.data.select_table_info.btree_height});
+    std.debug.print("  Leaf cells: {}\n", .{final_metadata.data.select_table_info.btree_leaf_cells});
+    std.debug.print("  Internal cells: {}\n", .{final_metadata.data.select_table_info.btree_internal_cells});
+    std.debug.print("  Leaf pages: {}\n", .{final_metadata.data.select_table_info.btree_leaf_pages});
+    std.debug.print("  Internal pages: {}\n", .{final_metadata.data.select_table_info.btree_internal_pages});
     std.debug.print("  Total keys: {}\n", .{inserted_keys.items.len});
 
     std.debug.print("Large dataset stress test completed successfully!\n", .{});
@@ -890,7 +890,7 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
         //,
         //    .{ data.page, page_meta.cells.items.len, page_meta.right_child },
         //);
-        //if (primary_key_data_type == .BIN or primary_key_data_type == .TEXT) {
+        //if (primary_key_data_type == .bin or primary_key_data_type == .txt) {
         //    std.debug.print("data.min_key: {s}.   {}\ndata.max_key: {s}.   {}\n", .{
         //        if (data.min_key != null) data.min_key.?[8..] else "",
         //        if (data.min_key != null) data.min_key.?.len else 0,
@@ -929,7 +929,7 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
 
             if (data.min_key) |min_key| {
                 if (!(serde.compare_serialized_bytes(primary_key_data_type, min_key, curr_key) == std.math.Order.lt)) {
-                    if (primary_key_data_type == .BIN or primary_key_data_type == .TEXT) {
+                    if (primary_key_data_type == .bin or primary_key_data_type == .txt) {
                         std.debug.print("curr_key: {s} \nmin_key: {s}\n\n", .{ curr_key[8..12], min_key[8..12] });
                     } else {
                         std.debug.print("curr_key: {d} \nmin_key: {d}\n\n", .{ curr_key, min_key });
@@ -941,7 +941,7 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
 
             if (data.max_key) |max_key| {
                 if (!(serde.compare_serialized_bytes(primary_key_data_type, curr_key, max_key).compare(.lte))) {
-                    if (primary_key_data_type == .BIN or primary_key_data_type == .TEXT) {
+                    if (primary_key_data_type == .bin or primary_key_data_type == .txt) {
                         std.debug.print("curr_key: {s} \nmax_key: {s}\n\n", .{
                             curr_key[8..],
                             max_key[8..],

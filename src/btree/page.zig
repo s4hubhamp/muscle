@@ -487,14 +487,14 @@ pub const Cell = struct {
             key_slice = self.content;
         } else {
             switch (key_data_type) {
-                .INT, .REAL => {
+                .int, .real => {
                     key_slice = self.content[0..@sizeOf(i64)];
                 },
-                .BIN, .TEXT => {
+                .bin, .txt => {
                     const len = std.mem.readInt(usize, self.content[0..@sizeOf(usize)], .little);
                     key_slice = self.content[0..(@sizeOf(usize) + len)];
                 },
-                .BOOL => {
+                .bool => {
                     // we don't support bool as primary key
                     unreachable;
                 },

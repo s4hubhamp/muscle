@@ -52,57 +52,56 @@ pub const ExecutionEngine = struct {
         var results: QueryResult = undefined;
 
         switch (query) {
-            Query.CreateTable => |payload| {
+            Query.create_table => |payload| {
                 is_update_query = true;
                 results = self.create_table(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
-            Query.DropTable => |payload| {
+            Query.drop_table => |payload| {
                 is_update_query = true;
                 results = self.drop_table(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
-            Query.Insert => |payload| {
+            Query.insert => |payload| {
                 is_update_query = true;
                 results = self.insert(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
-            Query.Update => |payload| {
+            Query.update => |payload| {
                 is_update_query = true;
                 results = self.update(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
-            Query.Delete => |payload| {
+            Query.delete => |payload| {
                 is_update_query = true;
                 results = self.delete(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
                     return try maybe_create_client_error_response(err);
                 };
             },
-            Query.Select => |payload| {
+            Query.select => |payload| {
                 results = self.select(&metadata_page, tables, payload) catch |err| {
                     return try maybe_create_client_error_response(err);
                 };
             },
-            Query.SelectTableMetadata => |payload| {
-                results = self.select_table_metadata(&metadata_page, tables, payload) catch |err| {
+            Query.select_table_info => |payload| {
+                results = self.select_table_info(&metadata_page, tables, payload) catch |err| {
                     return try maybe_create_client_error_response(err);
                 };
             },
-            Query.SelectDatabaseMetadata => {
-                results = self.select_database_metadata(&metadata_page) catch |err| {
+            Query.select_database_info => {
+                results = self.select_database_info(&metadata_page) catch |err| {
                     return try maybe_create_client_error_response(err);
                 };
             },
-            else => @panic("not implemented"),
         }
 
         // Handle rollback/commit logic
@@ -128,10 +127,10 @@ pub const ExecutionEngine = struct {
     fn maybe_create_client_error_response(err: anyerror) !QueryResult {
         const classification = errors.classify_error(err);
         switch (classification) {
-            .Client => {
+            .client => {
                 return QueryResult.error_result(err, @errorName(err));
             },
-            .System => {
+            .system => {
                 return err;
             },
         }
@@ -168,16 +167,16 @@ pub const ExecutionEngine = struct {
         for (payload.columns, 0..) |*c, i| {
             var column = c.*;
 
-            if (column.auto_increment and column.data_type != .INT) {
+            if (column.auto_increment and column.data_type != .int) {
                 return error.AutoIncrementColumnMustBeInteger;
             }
 
             if (i == payload.primary_key_column_index) {
                 switch (column.data_type) {
                     // bools can't be primary key
-                    .BOOL => return error.BadPrimaryKeyType,
+                    .bool => return error.BadPrimaryKeyType,
                     // for text and binaries we have a limit on length
-                    .TEXT, .BIN => |len| {
+                    .txt, .bin => |len| {
                         // for text we store len as first param
                         if (len > page.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(usize)) {
                             return error.PrimaryKeyMaxLengthExceeded;
@@ -191,7 +190,7 @@ pub const ExecutionEngine = struct {
                 column.not_null = true;
 
                 // if data_type is integer then it's basically alias to default primary key so we will enable all the defaults
-                if (column.data_type == .INT) {
+                if (column.data_type == .int) {
                     column.auto_increment = true;
                     column.max_int_value = 0;
                 }
@@ -207,7 +206,7 @@ pub const ExecutionEngine = struct {
         // create a default primary key column if not provided
         if (payload.primary_key_column_index == null) {
             const DEFAULT_PRIMARY_KEY_COLUMN_NAME = "Row_Id";
-            const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .INT;
+            const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .int;
             try columns.insert(0, muscle.Column{
                 .name = DEFAULT_PRIMARY_KEY_COLUMN_NAME,
                 .data_type = DEFAULT_PRIMARY_KEY_COLUMN_TYPE,
@@ -320,14 +319,14 @@ pub const ExecutionEngine = struct {
         // for each column find value
         for (table.?.columns, 0..) |*column, i| {
             const value = find_value(column.name, payload.values);
-            var final_value_to_serialize: muscle.Value = .{ .NULL = {} };
+            var final_value_to_serialize: muscle.Value = .{ .null = {} };
 
             // if value is not provided or it's provided and null
-            if (value == null or value.?.value == .NULL) {
+            if (value == null or value.?.value == .null) {
                 if (column.auto_increment) {
                     // increment value and serialize
                     column.max_int_value += 1;
-                    final_value_to_serialize = muscle.Value{ .INT = column.max_int_value };
+                    final_value_to_serialize = muscle.Value{ .int = column.max_int_value };
                 } else if (column.not_null) {
                     return error.MissingValue;
                 } else {
@@ -341,31 +340,31 @@ pub const ExecutionEngine = struct {
                 if (column.auto_increment) {
                     // here we have auto_increment but we are still getting value
                     // need to adjust max value if current value is bigger
-                    if (column.max_int_value < final_value_to_serialize.INT) {
-                        column.max_int_value = final_value_to_serialize.INT;
+                    if (column.max_int_value < final_value_to_serialize.int) {
+                        column.max_int_value = final_value_to_serialize.int;
                     }
                 }
 
                 // validate the type of value
                 switch (column.data_type) {
-                    .INT => if (final_value_to_serialize != .INT and final_value_to_serialize != .NULL)
+                    .int => if (final_value_to_serialize != .int and final_value_to_serialize != .null)
                         return error.TypeMismatch,
-                    .REAL => if (final_value_to_serialize != .REAL and final_value_to_serialize != .NULL)
+                    .real => if (final_value_to_serialize != .real and final_value_to_serialize != .null)
                         return error.TypeMismatch,
-                    .BOOL => if (final_value_to_serialize != .BOOL and final_value_to_serialize != .NULL)
+                    .bool => if (final_value_to_serialize != .bool and final_value_to_serialize != .null)
                         return error.TypeMismatch,
-                    .TEXT => |len| switch (final_value_to_serialize) {
-                        .TEXT => |text| {
+                    .txt => |len| switch (final_value_to_serialize) {
+                        .txt => |text| {
                             if (text.len > len) return error.TextTooLong;
                         },
-                        .NULL => {},
+                        .null => {},
                         else => return error.TypeMismatch,
                     },
-                    .BIN => |len| switch (final_value_to_serialize) {
-                        .BIN => |bin| {
+                    .bin => |len| switch (final_value_to_serialize) {
+                        .bin => |bin| {
                             if (bin.len > len) return error.BinaryTooLarge;
                         },
-                        .NULL => {},
+                        .null => {},
                         else => return error.TypeMismatch,
                     },
                 }
@@ -401,7 +400,7 @@ pub const ExecutionEngine = struct {
         try metadata_page.set_tables(self.allocator, tables);
         try self.pager.update_page(0, metadata_page);
 
-        return QueryResult.success_result(.{ .Insert = .{ .rows_created = 1 } });
+        return QueryResult.success_result(.{ .insert = .{ .rows_created = 1 } });
     }
 
     fn update(
@@ -469,14 +468,14 @@ pub const ExecutionEngine = struct {
         // for each column find value
         for (table.?.columns, 0..) |*column, i| {
             const value = find_value(column.name, payload.values);
-            var final_value_to_serialize: muscle.Value = .{ .NULL = {} };
+            var final_value_to_serialize: muscle.Value = .{ .null = {} };
 
             // if value is not provided or it's provided and null
-            if (value == null or value.?.value == .NULL) {
+            if (value == null or value.?.value == .null) {
                 if (column.auto_increment) {
                     // increment value and serialize
                     column.max_int_value += 1;
-                    final_value_to_serialize = muscle.Value{ .INT = column.max_int_value };
+                    final_value_to_serialize = muscle.Value{ .int = column.max_int_value };
                 } else if (column.not_null) {
                     return error.MissingValue;
                 } else {
@@ -490,31 +489,31 @@ pub const ExecutionEngine = struct {
                 if (column.auto_increment) {
                     // here we have auto_increment but we are still getting value
                     // need to adjust max value if current value is bigger
-                    if (column.max_int_value < final_value_to_serialize.INT) {
-                        column.max_int_value = final_value_to_serialize.INT;
+                    if (column.max_int_value < final_value_to_serialize.int) {
+                        column.max_int_value = final_value_to_serialize.int;
                     }
                 }
 
                 // validate the type of value
                 switch (column.data_type) {
-                    .INT => if (final_value_to_serialize != .INT and final_value_to_serialize != .NULL)
+                    .int => if (final_value_to_serialize != .int and final_value_to_serialize != .null)
                         return error.TypeMismatch,
-                    .REAL => if (final_value_to_serialize != .REAL and final_value_to_serialize != .NULL)
+                    .real => if (final_value_to_serialize != .real and final_value_to_serialize != .null)
                         return error.TypeMismatch,
-                    .BOOL => if (final_value_to_serialize != .BOOL and final_value_to_serialize != .NULL)
+                    .bool => if (final_value_to_serialize != .bool and final_value_to_serialize != .null)
                         return error.TypeMismatch,
-                    .TEXT => |len| switch (final_value_to_serialize) {
-                        .TEXT => |text| {
+                    .txt => |len| switch (final_value_to_serialize) {
+                        .txt => |text| {
                             if (text.len > len) return error.TextTooLong;
                         },
-                        .NULL => {},
+                        .null => {},
                         else => return error.TypeMismatch,
                     },
-                    .BIN => |len| switch (final_value_to_serialize) {
-                        .BIN => |bin| {
+                    .bin => |len| switch (final_value_to_serialize) {
+                        .bin => |bin| {
                             if (bin.len > len) return error.BinaryTooLarge;
                         },
-                        .NULL => {},
+                        .null => {},
                         else => return error.TypeMismatch,
                     },
                 }
@@ -550,7 +549,7 @@ pub const ExecutionEngine = struct {
         try metadata_page.set_tables(self.allocator, tables);
         try self.pager.update_page(0, metadata_page);
 
-        return QueryResult.success_result(.{ .Update = .{ .rows_affected = 1 } });
+        return QueryResult.success_result(.{ .update = .{ .rows_affected = 1 } });
     }
 
     fn delete(
@@ -681,7 +680,7 @@ pub const ExecutionEngine = struct {
                 var offset: usize = 0;
                 for (result_columns.items) |*column| {
                     switch (column.data_type) {
-                        .BIN, .TEXT => {
+                        .bin, .txt => {
                             const len = std.mem.readInt(usize, cell.content[offset..][0..@sizeOf(usize)], .little);
 
                             { //offset += @sizeOf(usize);
@@ -695,7 +694,7 @@ pub const ExecutionEngine = struct {
                             try row_bytes.appendSlice(cell.content[offset..(offset + len)]);
                             offset += len;
                         },
-                        .INT => {
+                        .int => {
                             //print("  {s}={}", .{
                             //    column.name,
                             //    std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little),
@@ -704,7 +703,7 @@ pub const ExecutionEngine = struct {
                             try row_bytes.appendSlice(cell.content[offset..(offset + @sizeOf(i64))]);
                             offset += @sizeOf(i64);
                         },
-                        .REAL => {
+                        .real => {
                             //print("  {s}={}", .{
                             //    column.name,
                             //    @as(f64, @bitCast(std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little))),
@@ -713,7 +712,7 @@ pub const ExecutionEngine = struct {
                             try row_bytes.appendSlice(cell.content[offset..(offset + @sizeOf(i64))]);
                             offset += @sizeOf(i64);
                         },
-                        .BOOL => {
+                        .bool => {
                             //print(
                             //    "  {s}={any}",
                             //    .{ column.name, if (cell.content[offset] == 1) true else false },
@@ -741,10 +740,10 @@ pub const ExecutionEngine = struct {
 
         //std.debug.print("\n\n*****************************************************************\n\n", .{});
 
-        return QueryResult.success_result(.{ .Select = result });
+        return QueryResult.success_result(.{ .select = result });
     }
 
-    fn select_table_metadata(
+    fn select_table_info(
         self: *ExecutionEngine,
         metadata: *page.DBMetadataPage,
         tables: []muscle.Table,
@@ -845,10 +844,10 @@ pub const ExecutionEngine = struct {
             }
         }
 
-        return QueryResult.success_result(.{ .SelectTableMetadata = result });
+        return QueryResult.success_result(.{ .select_table_info = result });
     }
 
-    fn select_database_metadata(
+    fn select_database_info(
         self: *ExecutionEngine,
         metadata: *page.DBMetadataPage,
     ) !QueryResult {
@@ -882,7 +881,7 @@ pub const ExecutionEngine = struct {
 
         assert(metadata.free_pages == free_pages.len);
 
-        return QueryResult.success_result(.{ .SelectDatabaseMetadata = SelectDatabaseMetadataResult{
+        return QueryResult.success_result(.{ .select_database_info = SelectDatabaseMetadataResult{
             .n_total_pages = metadata.total_pages,
             .n_free_pages = metadata.free_pages,
             .first_free_page = metadata.first_free_page,
@@ -896,8 +895,8 @@ pub const QueryResult = struct {
     data: QueryResultData,
 
     pub const QueryStatus = enum {
-        Success,
-        Error,
+        success,
+        err,
     };
 
     pub const ErrorResult = struct {
@@ -906,49 +905,37 @@ pub const QueryResult = struct {
     };
 
     pub const QueryResultData = union(enum) {
-        //
-        // DDL Operations
-        //
-        //CreateTable: CreateTableResult,
-        //DropTable: DropTableResult,
+        insert: InsertResult,
+        update: UpdateResult,
+        select: SelectResult,
 
         //
-        // DML Operations
-        //
-        Insert: InsertResult,
-        Update: UpdateResult,
-        //Delete: DeleteResult,
-
-        //
-        // Query Operations
-        //
-        Select: SelectResult,
-        SelectTableMetadata: SelectTableMetadataResult,
-        SelectDatabaseMetadata: SelectDatabaseMetadataResult,
+        select_table_info: SelectTableMetadataResult,
+        select_database_info: SelectDatabaseMetadataResult,
 
         // Error case
-        Error: ErrorResult,
+        err: ErrorResult,
 
-        // Temp void result type
+        // void result type when we don't have any data
         __void: void,
     };
 
     pub fn success_result(data: QueryResultData) QueryResult {
         return QueryResult{
-            .status = .Success,
+            .status = .success,
             .data = data,
         };
     }
 
     pub fn error_result(err: anyerror, message: []const u8) QueryResult {
         return QueryResult{
-            .status = .Error,
-            .data = .{ .Error = ErrorResult{ .error_code = err, .error_message = message } },
+            .status = .err,
+            .data = .{ .err = ErrorResult{ .error_code = err, .error_message = message } },
         };
     }
 
     pub fn is_error_result(self: *const QueryResult) bool {
-        return self.status == .Error;
+        return self.status == .err;
     }
 };
 
@@ -961,8 +948,6 @@ const CreateTablePayload = struct {
 const DropTablePayload = struct {
     table_name: []const u8,
 };
-
-const DropIndexPayload = struct {};
 
 pub const InsertPayload = struct {
     pub const Value = struct {
@@ -996,15 +981,14 @@ const DeletePayload = struct {
 };
 
 pub const Query = union(enum) {
-    CreateTable: CreateTablePayload,
-    DropTable: DropTablePayload,
-    DropIndex: DropIndexPayload,
-    Insert: InsertPayload,
-    Update: UpdatePayload,
-    Select: SelectPayload,
-    Delete: DeletePayload,
-    SelectTableMetadata: SelectTableMetadata,
-    SelectDatabaseMetadata: void,
+    create_table: CreateTablePayload,
+    drop_table: DropTablePayload,
+    insert: InsertPayload,
+    update: UpdatePayload,
+    select: SelectPayload,
+    delete: DeletePayload,
+    select_table_info: SelectTableMetadata,
+    select_database_info: void,
 };
 
 pub const InsertResult = struct {
@@ -1069,20 +1053,3 @@ pub const SelectTableMetadataResult = struct {
         std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   End Metadata  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
     }
 };
-
-//const ExecutionPlan = struct {
-//    steps: [32]ExecutionStep,
-//    n_steps: usize,
-//};
-
-//const ExecutionStep = union(enum) {
-//    .TABLE_SCAN: struct {
-//        .table_name: []const u8,
-//    },
-//    .INDEX_SCAN: struct {
-//        .index_name: []const u8,
-//    },
-//    .ASSERT_UNIQUE: struct {
-//        .index_name: []const u8,
-//    },
-//};

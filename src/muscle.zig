@@ -17,39 +17,32 @@ pub const Column = struct {
     // constraints
     unique: bool = false,
     not_null: bool = false,
-    default: DefaultValue = DefaultValue{ .NULL = {} },
+    default: DefaultValue = DefaultValue{ .null = {} },
     auto_increment: bool = false,
     // curr max value of int column used in auto_increment
     max_int_value: i64 = 0,
 };
 
-pub const DataType = union(enum) { INT, REAL, BOOL, TEXT: usize, BIN: usize };
+pub const DataType = union(enum) { int, real, bool, txt: usize, bin: usize };
 pub const Value = union(enum) {
-    INT: i64,
-    REAL: f64,
-    BOOL: bool,
-    TEXT: []const u8,
-    BIN: []const u8,
-    NULL: void,
+    int: i64,
+    real: f64,
+    bool: bool,
+    txt: []const u8,
+    bin: []const u8,
+    null: void,
 };
 
-const DefaultValueVariant = enum {
-    NULL,
+const DefaultValue = union(enum) {
+    null: void,
     // "HH:MM:SS"
-    CURRENT_TIME,
+    current_time: void,
     // "YYYY-MM-DD"
-    CURRENT_DATE,
+    current_date: void,
     // "YYYY-MM-DD HH:MM:SS"
-    CURRENT_TIMESTAMP,
+    current_timestamp: void,
     // default can be any literan value also
-    LITERAL,
-};
-const DefaultValue = union(DefaultValueVariant) {
-    NULL: void,
-    CURRENT_TIME: void,
-    CURRENT_DATE: void,
-    CURRENT_TIMESTAMP: void,
-    LITERAL: Value,
+    literal: Value,
 };
 pub const Index = struct {
     // root page of the index btree

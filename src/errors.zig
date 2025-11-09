@@ -44,8 +44,8 @@ pub const SystemError = error{
 pub const DatabaseError = ClientError || SystemError;
 
 pub const ErrorClassification = enum {
-    Client,
-    System,
+    client,
+    system,
 };
 
 pub fn classify_error(err: anyerror) ErrorClassification {
@@ -69,8 +69,8 @@ pub fn classify_error(err: anyerror) ErrorClassification {
         error.PrimaryKeyMaxLengthExceeded,
         error.MaxValueReached,
         error.UniqueConstraintViolation,
-        => .Client,
+        => .client,
 
-        else => .System,
+        else => .system,
     };
 }

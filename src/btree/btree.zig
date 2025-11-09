@@ -104,8 +104,8 @@ pub const BTree = struct {
                     leaf_parent_page,
                     leaf_index_in_parent,
                     &path,
-                    .{ .LEAF_OPERATION = .{
-                        .INSERT = .{
+                    .{ .leaf_operation = .{
+                        .insert = .{
                             .cell = cell,
                             .insert_at_slot = insert_at_slot,
                         },
@@ -139,8 +139,8 @@ pub const BTree = struct {
                     leaf_parent_page,
                     leaf_index_in_parent,
                     &path,
-                    .{ .LEAF_OPERATION = .{
-                        .UPDATE = .{
+                    .{ .leaf_operation = .{
+                        .update = .{
                             .cell = cell,
                             .update_at_slot = update_at_slot,
                         },
@@ -176,8 +176,8 @@ pub const BTree = struct {
                     leaf_parent_page,
                     leaf_index_in_parent,
                     &path,
-                    .{ .LEAF_OPERATION = .{
-                        .DELETE = .{
+                    .{ .leaf_operation = .{
+                        .delete = .{
                             .delete_at_slot = delete_at_slot,
                         },
                     } },
@@ -190,15 +190,15 @@ pub const BTree = struct {
     }
 
     const LeafOperation = union(enum) {
-        INSERT: struct {
+        insert: struct {
             cell: page.Cell,
             insert_at_slot: page.Page.SlotArrayIndex,
         },
-        UPDATE: struct {
+        update: struct {
             cell: page.Cell,
             update_at_slot: page.Page.SlotArrayIndex,
         },
-        DELETE: struct {
+        delete: struct {
             delete_at_slot: page.Page.SlotArrayIndex,
         },
     };
@@ -219,8 +219,8 @@ pub const BTree = struct {
         target_page_slot_inside_parent: ?u16, // null for root node
         path: *std.ArrayList(PathDetail),
         modification_request: union(enum) {
-            LEAF_OPERATION: LeafOperation,
-            PROPAGATED_CHANGES: TreeChangeInfo,
+            leaf_operation: LeafOperation,
+            propagated_changes: TreeChangeInfo,
         },
     ) !void {
         var target_page = try self.pager.get_page(page.Page, target_page_number);
@@ -232,22 +232,22 @@ pub const BTree = struct {
         if (is_root) {
             if (is_leaf) {
                 var save = true;
-                switch (modification_request.LEAF_OPERATION) {
-                    .INSERT => |data| {
+                switch (modification_request.leaf_operation) {
+                    .insert => |data| {
                         target_page.insert(data.cell, data.insert_at_slot) catch {
                             save = false;
                             try self.split_leaf_root(&target_page, target_page_number, true, data.cell, data.insert_at_slot);
                         };
                     },
 
-                    .UPDATE => |data| {
+                    .update => |data| {
                         target_page.update(data.cell, data.update_at_slot) catch {
                             save = false;
                             try self.split_leaf_root(&target_page, target_page_number, false, data.cell, data.update_at_slot);
                         };
                     },
 
-                    .DELETE => |data| {
+                    .delete => |data| {
                         target_page.remove(data.delete_at_slot);
                         save = true;
                     },
@@ -257,13 +257,13 @@ pub const BTree = struct {
             } else {
                 const space_needed = try self.calculate_space_after_modifications(
                     &target_page,
-                    &modification_request.PROPAGATED_CHANGES,
+                    &modification_request.propagated_changes,
                 );
 
                 if (space_needed <= page.Page.CONTENT_MAX_SIZE) {
                     try self.update_internal_node_with_change_info(
                         &target_page,
-                        &modification_request.PROPAGATED_CHANGES,
+                        &modification_request.propagated_changes,
                     );
 
                     // if root becomes empty after update, then right child will become new root
@@ -281,7 +281,7 @@ pub const BTree = struct {
                     try self.split_internal_root(
                         &target_page,
                         target_page_number,
-                        modification_request.PROPAGATED_CHANGES,
+                        modification_request.propagated_changes,
                     );
                 }
             }
@@ -291,8 +291,8 @@ pub const BTree = struct {
 
         if (is_leaf) {
             var save = true;
-            switch (modification_request.LEAF_OPERATION) {
-                .INSERT => |data| {
+            switch (modification_request.leaf_operation) {
+                .insert => |data| {
                     target_page.insert(data.cell, data.insert_at_slot) catch {
                         save = false;
 
@@ -304,7 +304,7 @@ pub const BTree = struct {
                     };
                 },
 
-                .UPDATE => |data| {
+                .update => |data| {
                     target_page.update(data.cell, data.update_at_slot) catch {
                         save = false;
 
@@ -316,7 +316,7 @@ pub const BTree = struct {
                     };
                 },
 
-                .DELETE => |data| {
+                .delete => |data| {
                     target_page.remove(data.delete_at_slot);
 
                     // need to check if the child becomes empty after deleting an key
@@ -343,7 +343,7 @@ pub const BTree = struct {
 
             const space_needed = try self.calculate_space_after_modifications(
                 &target_page,
-                &modification_request.PROPAGATED_CHANGES,
+                &modification_request.propagated_changes,
             );
 
             if (space_needed == 0 or space_needed > page.Page.CONTENT_MAX_SIZE) {
@@ -353,12 +353,12 @@ pub const BTree = struct {
                 next_change_info = try self.modify_internal_node(
                     &siblings,
                     target_page_number,
-                    &modification_request.PROPAGATED_CHANGES,
+                    &modification_request.propagated_changes,
                 );
             } else {
                 try self.update_internal_node_with_change_info(
                     &target_page,
-                    &modification_request.PROPAGATED_CHANGES,
+                    &modification_request.propagated_changes,
                 );
 
                 // assert that we should not end up removing all cells
@@ -381,7 +381,7 @@ pub const BTree = struct {
                 parent_info.parent,
                 parent_info.child_index,
                 path,
-                .{ .PROPAGATED_CHANGES = next_change_info.? },
+                .{ .propagated_changes = next_change_info.? },
             );
         } else {
             try self.balance(
@@ -389,7 +389,7 @@ pub const BTree = struct {
                 null,
                 null,
                 path,
-                .{ .PROPAGATED_CHANGES = next_change_info.? },
+                .{ .propagated_changes = next_change_info.? },
             );
         }
     }
