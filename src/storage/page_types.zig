@@ -1,9 +1,8 @@
 const std = @import("std");
-const muscle = @import("muscle");
-const serde = @import("../serialize_deserialize.zig");
-const btree = @import("./btree.zig");
+const muscle = @import("../muscle.zig");
 
 const assert = std.debug.assert;
+const serde = muscle.common.serde;
 
 pub const DBMetadataPage = extern struct {
     total_pages: u32,
@@ -67,6 +66,7 @@ pub const DBMetadataPage = extern struct {
 //          +-----------------------------------------
 //                         Page Content
 //
+// @Todo rename this to DataPage or something other which makes sense for index values also
 pub const Page = extern struct {
     // All fields except content are part of the Page header
     const HEADER_SIZE = 18;
@@ -547,3 +547,7 @@ pub const FreePage = extern struct {
         return try serde.serialize_page(self.*);
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}

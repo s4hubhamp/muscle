@@ -1,8 +1,10 @@
 const std = @import("std");
-const muscle = @import("muscle");
+const muscle = @import("../../muscle.zig");
+
 const posix = std.posix;
 const fs = std.fs;
 const File = fs.File;
+const PAGE_SIZE = muscle.PAGE_SIZE;
 
 pub const IO = struct {
     file: File,
@@ -37,13 +39,13 @@ pub const IO = struct {
     // read page and return number of bytes read into buffer
     pub fn read(self: *IO, page_number: u32, buffer: []u8) ReadError!usize {
         // since every page size is supposed to be same as 8Kb
-        try self.file.seekTo(page_number * muscle.PAGE_SIZE);
+        try self.file.seekTo(page_number * PAGE_SIZE);
         return try self.file.read(buffer);
     }
 
     const WriteError = posix.WriteError || posix.SeekError;
     pub fn write(self: *IO, page_number: u32, buffer: []const u8) WriteError!usize {
-        try self.file.seekTo(page_number * muscle.PAGE_SIZE);
+        try self.file.seekTo(page_number * PAGE_SIZE);
         const written = try self.file.write(buffer);
         // for now we are not doing retries so asserting
         std.debug.assert(written == buffer.len);
@@ -52,8 +54,8 @@ pub const IO = struct {
 
     pub fn truncate(self: *IO, page_number: ?u32) !void {
         if (page_number) |n| {
-            std.debug.print("Truncated file to position: {}\n", .{muscle.PAGE_SIZE * n});
-            try self.file.setEndPos(muscle.PAGE_SIZE * n);
+            std.debug.print("Truncated file to position: {}\n", .{PAGE_SIZE * n});
+            try self.file.setEndPos(PAGE_SIZE * n);
         } else {
             try self.file.setEndPos(0);
         }

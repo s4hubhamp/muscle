@@ -1,9 +1,8 @@
 const std = @import("std");
-const muscle = @import("muscle");
-const page = @import("./btree/page.zig");
-const InsertPayload = @import("./execution_engine.zig").InsertPayload;
+const muscle = @import("../muscle.zig");
 
 const assert = std.debug.assert;
+const page_types = muscle.storage.page_types;
 
 pub fn serialize_page(page_struct: anytype) ![muscle.PAGE_SIZE]u8 {
     comptime {
@@ -28,7 +27,7 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
     return page_struct;
 }
 
-pub fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
+pub fn serailize_value(buffer: *std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
     switch (val) {
         .bin => |blob| {
             // len will take usize bytes
@@ -52,7 +51,7 @@ pub fn serailize_value(buffer: *std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE)
         },
         .txt => |str| {
             // len will take usize bytes
-            var tmp: [8]u8 = undefined; // TODO: Maybe we don't need this to be usize?
+            var tmp: [8]u8 = undefined; // @Todo: Maybe we don't need this to be usize?
             std.mem.writeInt(usize, &tmp, str.len, .little);
             try buffer.appendSlice(&tmp);
             try buffer.appendSlice(str);
@@ -91,11 +90,6 @@ pub fn deserialize_value(buffer: []const u8, data_type: muscle.DataType) muscle.
             unreachable;
         },
     }
-}
-
-// @Todo remove this
-pub fn serialize_rowid(buffer: *[8]u8, id: muscle.RowId) !void {
-    std.mem.writeInt(muscle.RowId, buffer, id, .little);
 }
 
 pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []const u8) std.math.Order {

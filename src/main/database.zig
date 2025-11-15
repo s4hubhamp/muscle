@@ -1,36 +1,39 @@
 const std = @import("std");
-const muscle = @import("muscle");
-
-const errors = @import("./errors.zig");
-const Pager = @import("./btree/pager.zig").Pager;
-const page = @import("./btree/page.zig");
-const BTree = @import("./btree/btree.zig").BTree;
-const serde = @import("./serialize_deserialize.zig");
+const muscle = @import("../muscle.zig");
+const QueryResult = @import("QueryResult.zig");
 
 const print = std.debug.print;
 const assert = std.debug.assert;
+const BTree = muscle.execution.BTree;
+const errors = muscle.common.errors;
+const page_types = muscle.storage.page_types;
+const PageManager = muscle.storage.PageManager;
+const serde = muscle.common.serde;
+// @Todo should this be temporary?
+pub const SelectTableMetadataResult = QueryResult.SelectTableMetadataResult;
+pub const SelectDatabaseMetadataResult = QueryResult.SelectDatabaseMetadataResult;
+pub const SelectResult = QueryResult.SelectResult;
 
-// Execution engine is responsible to run query and return results
-// It's job is to understand the query and choose most optimal way to calculate results
-pub const ExecutionEngine = struct {
+// The database object. This is main API to interact with the database.
+pub const Muscle = struct {
     allocator: std.mem.Allocator,
-    pager: Pager,
+    pager: PageManager,
 
-    pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !ExecutionEngine {
-        var pager = try Pager.init(database_file_path, allocator);
+    pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Muscle {
+        var pager = try PageManager.init(database_file_path, allocator);
 
         // call rollback to sync if we had crashed earlier
         print("Calling Rollback after instance start.\n", .{});
         try pager.rollback();
 
-        return ExecutionEngine{ .allocator = allocator, .pager = pager };
+        return Muscle{ .allocator = allocator, .pager = pager };
     }
 
-    pub fn deinit(self: *ExecutionEngine) void {
+    pub fn deinit(self: *Muscle) void {
         self.pager.deinit();
     }
 
-    pub fn execute_query(self: *ExecutionEngine, query: Query) !QueryResult {
+    pub fn execute_query(self: *Muscle, query: Query) !QueryResult {
         var is_update_query = false;
         var should_rollback = false;
 
@@ -42,7 +45,7 @@ pub const ExecutionEngine = struct {
         // Perhaps the correct thing to do is making the decoding of metadata page faster,
         // we never keep it in journal to keep the journal simpler.
         //
-        var metadata_page = try self.pager.get_page(page.DBMetadataPage, 0);
+        var metadata_page = try self.pager.get_page(page_types.DBMetadataPage, 0);
         const parsed = try metadata_page.parse_tables(self.allocator);
         const tables = parsed.value;
         defer {
@@ -137,8 +140,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn create_table(
-        self: *ExecutionEngine,
-        metadata: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: CreateTablePayload,
     ) !QueryResult {
@@ -178,7 +181,7 @@ pub const ExecutionEngine = struct {
                     // for text and binaries we have a limit on length
                     .txt, .bin => |len| {
                         // for text we store len as first param
-                        if (len > page.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(usize)) {
+                        if (len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(usize)) {
                             return error.PrimaryKeyMaxLengthExceeded;
                         }
                     },
@@ -219,7 +222,7 @@ pub const ExecutionEngine = struct {
 
         const root_page_number = try self.pager.alloc_free_page(metadata);
         // initialize root page
-        const root_page = page.Page.init();
+        const root_page = page_types.Page.init();
         try self.pager.update_page(root_page_number, &root_page);
 
         const table = muscle.Table{
@@ -241,8 +244,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn drop_table(
-        self: *ExecutionEngine,
-        metadata: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: DropTablePayload,
     ) !QueryResult {
@@ -255,8 +258,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn insert(
-        self: *ExecutionEngine,
-        metadata_page: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata_page: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: InsertPayload,
     ) !QueryResult {
@@ -311,8 +314,8 @@ pub const ExecutionEngine = struct {
 
         // If the passed payload size is greater than max content that a single page can hold
         // this will overflow.
-        // so the max size of a single row for now is equal to `page.Page.CONTENT_MAX_SIZE`
-        var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
+        // so the max size of a single row for now is equal to `page_types.Page.CONTENT_MAX_SIZE`
+        var buffer = try std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE).init(0);
         var primary_key_bytes: []const u8 = undefined;
         var primary_key_type: muscle.DataType = undefined;
 
@@ -378,7 +381,7 @@ pub const ExecutionEngine = struct {
             if (i == 0) {
                 primary_key_bytes = buffer.constSlice();
                 primary_key_type = column.data_type;
-                if (primary_key_bytes.len > page.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
+                if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
                     return error.KeyTooLong;
                 }
             }
@@ -404,8 +407,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn update(
-        self: *ExecutionEngine,
-        metadata_page: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata_page: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: UpdatePayload,
     ) !QueryResult {
@@ -460,8 +463,8 @@ pub const ExecutionEngine = struct {
 
         // If the passed payload size is greater than max content that a single page can hold
         // this will overflow.
-        // so the max size of a single row for now is equal to `page.Page.CONTENT_MAX_SIZE`
-        var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
+        // so the max size of a single row for now is equal to `page_types.Page.CONTENT_MAX_SIZE`
+        var buffer = try std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE).init(0);
         var primary_key_bytes: []const u8 = undefined;
         var primary_key_type: muscle.DataType = undefined;
 
@@ -527,7 +530,7 @@ pub const ExecutionEngine = struct {
             if (i == 0) {
                 primary_key_bytes = buffer.constSlice();
                 primary_key_type = column.data_type;
-                if (primary_key_bytes.len > page.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
+                if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
                     return error.KeyTooLong;
                 }
             }
@@ -553,8 +556,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn delete(
-        self: *ExecutionEngine,
-        metadata_page: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata_page: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: DeletePayload,
     ) !QueryResult {
@@ -574,7 +577,7 @@ pub const ExecutionEngine = struct {
         }
 
         // primary key has size limit
-        var buffer = try std.BoundedArray(u8, page.Page.CONTENT_MAX_SIZE).init(0);
+        var buffer = try std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE).init(0);
         try serde.serailize_value(&buffer, payload.key);
 
         // Important to initiate BTree everytime OR have correct reference to metadata_page every time
@@ -596,8 +599,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn select(
-        self: *ExecutionEngine,
-        metadata: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: SelectPayload,
     ) !QueryResult {
@@ -649,11 +652,11 @@ pub const ExecutionEngine = struct {
         var curr_page_number = table.?.root;
 
         // find the leftmost leaf node
-        var curr_page = try self.pager.get_page(page.Page, curr_page_number);
+        var curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
         while (!curr_page.is_leaf()) {
             assert(curr_page.cell_at_slot(0).left_child != 0);
             curr_page_number = curr_page.cell_at_slot(0).left_child;
-            curr_page = try self.pager.get_page(page.Page, curr_page_number);
+            curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
         }
 
         //std.debug.print("\n\n*****************************************************************\n", .{});
@@ -674,7 +677,7 @@ pub const ExecutionEngine = struct {
                 const cell = curr_page.cell_at_slot(@intCast(slot_index));
                 var row_bytes = std.ArrayList(u8).init(payload.allocator);
 
-                //print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page.Page.SlotArrayEntry) });
+                //print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page_types.Page.SlotArrayEntry) });
                 //serial += 1;
 
                 var offset: usize = 0;
@@ -731,7 +734,7 @@ pub const ExecutionEngine = struct {
 
             if (curr_page.right == 0) break;
             curr_page_number = curr_page.right;
-            curr_page = try self.pager.get_page(page.Page, curr_page_number);
+            curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
         }
 
         //print("\n\ndatabase metadata: total_pages: {any} free_pages:{any} first_free_page:{any}", .{
@@ -744,8 +747,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn select_table_info(
-        self: *ExecutionEngine,
-        metadata: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: SelectTableMetadata,
     ) !QueryResult {
@@ -783,13 +786,13 @@ pub const ExecutionEngine = struct {
         const primary_key_data_type = table.?.columns[0].data_type;
         var first_page_in_level: ?muscle.PageNumber = table.?.root;
         var curr_page_number: muscle.PageNumber = undefined;
-        var curr_page: page.Page = undefined;
+        var curr_page: page_types.Page = undefined;
 
         const collect_page_info = struct {
             fn f(
                 map: *std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata),
                 _page_number: muscle.PageNumber,
-                _page: page.Page,
+                _page: page_types.Page,
                 _primary_key_data_type: muscle.DataType,
             ) !void {
                 var page_info = SelectTableMetadataResult.DBPageMetadata{
@@ -824,7 +827,7 @@ pub const ExecutionEngine = struct {
         while (first_page_in_level != null) {
             result.btree_height += 1;
             curr_page_number = first_page_in_level.?;
-            curr_page = try self.pager.get_page(page.Page, curr_page_number);
+            curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
             first_page_in_level =
                 if (!curr_page.is_leaf()) curr_page.child_at_slot(0) else null;
 
@@ -840,7 +843,7 @@ pub const ExecutionEngine = struct {
                 }
 
                 curr_page_number = curr_page.right;
-                curr_page = try self.pager.get_page(page.Page, curr_page_number);
+                curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
             }
         }
 
@@ -848,8 +851,8 @@ pub const ExecutionEngine = struct {
     }
 
     fn select_database_info(
-        self: *ExecutionEngine,
-        metadata: *page.DBMetadataPage,
+        self: *Muscle,
+        metadata: *page_types.DBMetadataPage,
     ) !QueryResult {
         var free_pages = try std.BoundedArray(muscle.PageNumber, 128).init(0);
 
@@ -862,7 +865,7 @@ pub const ExecutionEngine = struct {
                 }
 
                 try free_pages.append(curr_page_number);
-                const curr_page = try self.pager.get_page(page.FreePage, curr_page_number);
+                const curr_page = try self.pager.get_page(page_types.FreePage, curr_page_number);
                 curr_page_number = curr_page.next;
             }
         }
@@ -887,55 +890,6 @@ pub const ExecutionEngine = struct {
             .first_free_page = metadata.first_free_page,
             .free_pages = free_pages,
         } });
-    }
-};
-
-pub const QueryResult = struct {
-    status: QueryStatus,
-    data: QueryResultData,
-
-    pub const QueryStatus = enum {
-        success,
-        err,
-    };
-
-    pub const ErrorResult = struct {
-        error_code: anyerror,
-        error_message: []const u8,
-    };
-
-    pub const QueryResultData = union(enum) {
-        insert: InsertResult,
-        update: UpdateResult,
-        select: SelectResult,
-
-        //
-        select_table_info: SelectTableMetadataResult,
-        select_database_info: SelectDatabaseMetadataResult,
-
-        // Error case
-        err: ErrorResult,
-
-        // void result type when we don't have any data
-        __void: void,
-    };
-
-    pub fn success_result(data: QueryResultData) QueryResult {
-        return QueryResult{
-            .status = .success,
-            .data = data,
-        };
-    }
-
-    pub fn error_result(err: anyerror, message: []const u8) QueryResult {
-        return QueryResult{
-            .status = .err,
-            .data = .{ .err = ErrorResult{ .error_code = err, .error_message = message } },
-        };
-    }
-
-    pub fn is_error_result(self: *const QueryResult) bool {
-        return self.status == .err;
     }
 };
 
@@ -989,67 +943,4 @@ pub const Query = union(enum) {
     delete: DeletePayload,
     select_table_info: SelectTableMetadata,
     select_database_info: void,
-};
-
-pub const InsertResult = struct {
-    rows_created: u32,
-};
-
-pub const UpdateResult = struct {
-    rows_affected: u32,
-};
-
-pub const SelectResult = struct {
-    columns: std.ArrayList(muscle.Column),
-    rows: std.ArrayList(std.ArrayList(u8)),
-};
-
-pub const SelectDatabaseMetadataResult = struct {
-    n_total_pages: u32,
-    n_free_pages: u32,
-    first_free_page: u32,
-    free_pages: std.BoundedArray(muscle.PageNumber, 128),
-};
-
-pub const SelectTableMetadataResult = struct {
-    root_page: muscle.PageNumber,
-    table_columns: std.ArrayList(muscle.Column),
-    btree_height: u16,
-
-    btree_leaf_cells: u32,
-    btree_internal_cells: u32,
-    btree_leaf_pages: u16,
-    btree_internal_pages: u16,
-
-    pages: std.AutoHashMap(muscle.PageNumber, DBPageMetadata),
-
-    pub const DBPageCellMetadata = struct {
-        key: []u8,
-        value: []u8,
-        size: u16,
-        left_child: muscle.PageNumber,
-    };
-
-    pub const DBPageMetadata = struct {
-        page: muscle.PageNumber,
-        right_child: muscle.PageNumber,
-        content_size: u16,
-        free_space: u16,
-        left: muscle.PageNumber,
-        right: muscle.PageNumber,
-        cells: std.ArrayList(DBPageCellMetadata),
-    };
-
-    pub fn print(self: *const SelectTableMetadataResult) void {
-        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%     Metadata    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
-
-        std.debug.print("Root Page:             {}\n", .{self.root_page});
-        std.debug.print("Total Rows:            {}\n\n", .{self.btree_leaf_cells});
-        std.debug.print("BTree Height:          {}\n", .{self.btree_height});
-        std.debug.print("BTree Internal Pages:  {}\n", .{self.btree_internal_pages});
-        std.debug.print("BTree Leaf Pages:      {}\n", .{self.btree_leaf_pages});
-        std.debug.print("Btree Internal Cells:  {}\n", .{self.btree_internal_cells});
-
-        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   End Metadata  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
-    }
 };

@@ -1,5 +1,12 @@
-pub const RowId = i64;
+pub const database = @import("main/database.zig");
 
+pub const common = @import("common.zig");
+pub const storage = @import("storage.zig");
+pub const execution = @import("execution.zig");
+
+//
+// @Todo Types below are internal and should not be exposed outside
+//
 pub const Table = struct {
     // btree root page
     root: u32,
@@ -56,3 +63,7 @@ pub const Index = struct {
 
 pub const PAGE_SIZE = 4096;
 pub const PageNumber = u32;
+
+test {
+    @import("std").testing.refAllDecls(@This());
+}
