@@ -1,19 +1,18 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
 
-pub const QueryResult = @This();
+pub const QueryResult = union(enum) {
+    data: Data,
+    err: Error,
 
-status: QueryStatus,
-data: QueryResultData,
-
-pub const QueryStatus = enum {
-    success,
-    err,
+    pub fn is_error_result(self: *const QueryResult) bool {
+        return self.* == .err;
+    }
 };
 
-pub const ErrorResult = struct {
-    error_code: anyerror,
-    error_message: []const u8,
+pub const Error = struct {
+    code: anyerror,
+    message: []const u8,
 };
 
 pub const InsertResult = struct {
@@ -79,7 +78,7 @@ pub const SelectResult = struct {
     rows: std.ArrayList(std.ArrayList(u8)),
 };
 
-pub const QueryResultData = union(enum) {
+pub const Data = union(enum) {
     insert: InsertResult,
     update: UpdateResult,
     select: SelectResult,
@@ -88,27 +87,6 @@ pub const QueryResultData = union(enum) {
     select_table_info: SelectTableMetadataResult,
     select_database_info: SelectDatabaseMetadataResult,
 
-    // Error case
-    err: ErrorResult,
-
     // void result type when we don't have any data
-    __void: void,
+    __void,
 };
-
-pub fn success_result(data: QueryResultData) QueryResult {
-    return QueryResult{
-        .status = .success,
-        .data = data,
-    };
-}
-
-pub fn error_result(err: anyerror, message: []const u8) QueryResult {
-    return QueryResult{
-        .status = .err,
-        .data = .{ .err = ErrorResult{ .error_code = err, .error_message = message } },
-    };
-}
-
-pub fn is_error_result(self: *const QueryResult) bool {
-    return self.status == .err;
-}

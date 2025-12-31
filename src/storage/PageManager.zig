@@ -22,7 +22,7 @@ const serde = muscle.common.serde;
 // It's job is to interpret and write page by page number
 // It maintains list of dirty pages that are not yet written to the disk
 // Depending upon some stratergy it will try to write the pages to database file
-pub const PageManager = @This();
+const PageManager = @This();
 
 allocator: std.mem.Allocator,
 io: IO,

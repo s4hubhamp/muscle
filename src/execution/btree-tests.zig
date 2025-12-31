@@ -45,7 +45,7 @@ test "test tree operations on text primary key. Every leaf node can hold max one
             .columns = &table_columns,
             .primary_key_column_index = 0,
         } };
-        _ = try db.execute_query(create_table_query);
+        _ = try db.execute_query(create_table_query, arena.allocator());
     }
 
     const get_insert_query = struct {
@@ -64,23 +64,20 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     }.f;
 
     var delete_query: Query = Query{ .delete = .{ .table_name = table_name, .key = undefined } };
-    const select_metadata_query = Query{ .select_table_info = .{
-        .table_name = table_name,
-        .allocator = arena.allocator(),
-    } };
+    const select_metadata_query = Query{ .select_table_info = .{ .table_name = table_name } };
     //const select_database_metadata_query = Query{ .SelectDatabaseMetadata = {} };
 
     // Case: Inserting inside root when root is a leaf node.
-    _ = try db.execute_query(get_insert_query("a"));
-    var metadata = try db.execute_query(select_metadata_query);
+    _ = try db.execute_query(get_insert_query("a"), arena.allocator());
+    var metadata = try db.execute_query(select_metadata_query, arena.allocator());
     try validate_btree(&metadata.data.select_table_info);
     assert(metadata.data.select_table_info.btree_height == 1);
     assert(metadata.data.select_table_info.btree_leaf_cells == 1);
 
     // Case: Deleting when root is leaf node
     delete_query.delete.key = .{ .txt = "a" };
-    _ = try db.execute_query(delete_query);
-    metadata = try db.execute_query(select_metadata_query);
+    _ = try db.execute_query(delete_query, arena.allocator());
+    metadata = try db.execute_query(select_metadata_query, arena.allocator());
     try validate_btree(&metadata.data.select_table_info);
     assert(metadata.data.select_table_info.btree_height == 1);
     assert(metadata.data.select_table_info.btree_leaf_cells == 0);
@@ -88,10 +85,10 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // Case: Splitting root node
     {
         var txt = [_]u8{65} ** 2023;
-        _ = try db.execute_query(get_insert_query(&txt));
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
         for (&txt) |*char| char.* = 66;
-        _ = try db.execute_query(get_insert_query(&txt));
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         metadata.data.select_table_info.btree_height = 2;
         metadata.data.select_table_info.btree_leaf_cells = 2;
@@ -105,8 +102,8 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     {
         const txt = [_]u8{65} ** 2023;
         delete_query.delete.key = .{ .txt = &txt };
-        _ = try db.execute_query(delete_query);
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(delete_query, arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 1);
         assert(metadata.data.select_table_info.btree_leaf_cells == 1);
@@ -118,10 +115,10 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // Case: Adding divider key inside root
     {
         var txt = [_]u8{65} ** 2023;
-        _ = try db.execute_query(get_insert_query(&txt));
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
         for (&txt) |*char| char.* = 67;
-        _ = try db.execute_query(get_insert_query(&txt));
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 2);
         assert(metadata.data.select_table_info.btree_leaf_cells == 3);
@@ -134,8 +131,8 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // Case: Splitting root when root is internal node
     {
         var txt = [_]u8{68} ** 2023;
-        _ = try db.execute_query(get_insert_query(&txt));
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 3);
         assert(metadata.data.select_table_info.btree_leaf_cells == 4);
@@ -150,50 +147,50 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     {
         var txt = [_]u8{66} ** 2023;
         delete_query.delete.key = .{ .txt = &txt };
-        _ = try db.execute_query(delete_query);
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(delete_query, arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 2);
         assert(metadata.data.select_table_info.btree_leaf_cells == 3);
 
         // insert B back
-        _ = try db.execute_query(get_insert_query(&txt));
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
 
         // Delete A
         for (&txt) |*char| char.* = 65;
         delete_query.delete.key = .{ .txt = &txt };
-        _ = try db.execute_query(delete_query);
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(delete_query, arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 2);
         assert(metadata.data.select_table_info.btree_leaf_cells == 3);
 
         // insert A back
-        _ = try db.execute_query(get_insert_query(&txt));
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
 
         // Delete C
         for (&txt) |*char| char.* = 67;
         delete_query.delete.key = .{ .txt = &txt };
-        _ = try db.execute_query(delete_query);
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(delete_query, arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 2);
         assert(metadata.data.select_table_info.btree_leaf_cells == 3);
 
         // insert C back
-        _ = try db.execute_query(get_insert_query(&txt));
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
 
         // Delete D
         for (&txt) |*char| char.* = 68;
         delete_query.delete.key = .{ .txt = &txt };
-        _ = try db.execute_query(delete_query);
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(delete_query, arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 2);
         assert(metadata.data.select_table_info.btree_leaf_cells == 3);
@@ -206,8 +203,8 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // Case: New Internal node
     {
         var txt = [_]u8{68} ** 2023;
-        _ = try db.execute_query(get_insert_query(&txt));
-        metadata = try db.execute_query(select_metadata_query);
+        _ = try db.execute_query(get_insert_query(&txt), arena.allocator());
+        metadata = try db.execute_query(select_metadata_query, arena.allocator());
         try validate_btree(&metadata.data.select_table_info);
         assert(metadata.data.select_table_info.btree_height == 3);
         assert(metadata.data.select_table_info.btree_internal_cells == 3);
@@ -241,7 +238,7 @@ test "regression test 1" {
 
     const table_name = "stress_test";
     const select_metadata_query = Query{
-        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name },
     };
     const insert_keys: [6][]const u8 = .{
         "TCMMYDZPMXXZRALNIDLSFKOFGQFNXBZCGVAFEYEKDGFUMVETYJHRPACVHHGRETBKQYEWHPYSUAUMAENOJGZTRUCHGECHCFYJONDMYLDBOXNJVLUTKSWRNCENZVLSWIJXKOLBKRCHMSMOIIOSUVBXWZJPWCWMRXRGFJKEVTDWSMFYJQTQVFNPUHACVMMWDVUDTZBBQGYYJFOPWBVGGQXJVTXUVNBVUZDPLXHUZMYICKACYAITIMCGUSVIAIUBZHSPWJHTDNBTIAIHSFFBZHBXJRKFYRWTTUGOCOFMAFZKBIJWQJVHIGPUCPIQVNKQOQGVKDLAYSCBRFOVIUQZBJUSGBRJDXAXJQUHUXTQDPZKFEJNPQEFPSTBBJQBHFZHCIZYPJNWBGGJKQVLIGRDNKNIAZEHWPQVMWPDWMIQQBASIENVZNNPOCWNTBKOPRARIZVSIBFFNAGRVLIMILXFUZZPKLAOIOXMJXBWVFXOIQBMGOBIEBKMXGUFOOCFPKEYQNEDHVXQWXIJHWHJZRGJEXYUUGEGKZWQCBHGHWKGKMWHTFRTMEMGHUFHBPXTAGKFYLWGKHWBKTZJHXKDCUMIGGDQWEPLTHXLQWGPRIAFUVSOHZIEVVOOPRXUOXDITOFSFFYKCONYFXRWMRWYJNJCAWFWQQHUPYMLAKPTORLEFLTVNMWSCXBZDLJAUSHGUEHIMRWYHOKHCNEXZODUBHOFIDZDTEQFHGMZARAZGTFUDNRKKNUDWDDEFLJHCIJDRIGNTVCWOPNRNCSPJRMDMOCLJJCIYVEWNZSNRNNQECPVLZCWQOKRWCIMZCDOMDJFNEOYBNWVOYRDVBSPFLQKASJMTADALPDJNMYPISFOWELOREWXWKZFTTPSBKEELBOZWYFRPFXPVOEZQMZPXJLQQXZMCBWIRBUARAKUWAITQIYXSKNCXNADZBUQWFHQQXHAYTYWNOWZBMOZMQPIAURCNHMQIEXBJRJCGIMNXTZNPPMOMAUFKZUALHLXELUJAJPUZYZTSGWGHGHIJPMSRFHNTOFEEBUKDDDCZUUOXQQDTRGDINXVEHYMZXTVCVGHOXBGJPSGSPEMZMQCUBNNMZAVJYEQPCOQRFQWPACZPXNJXLAZQAZJCSUQJXQGKXWCRLRRWUPFQOXPCVEKGDDVYBQTGSBNSUKUVYNUXBHEXGMWFMDGVFPEIKVJQAYVOEVPNCBMIGPQVPXBOZXRPNAWKFXWQUJFUMYYZHQRMLDIPQHTKFNSHWWGSUXKLSHGFCRDCCEFRSTAWBHEMYIVLWSTKUMONFYLDOLXWTDYOXPPHHBZQXMMMWRSHUMNJLBAVERAREMSLFXGPSILDPAPZHVBLCYLCARXQFSSHKTLBSKQAEFYVRRKIJDQVTMTHFWXAIKBUHDRRRRNSVPYIGMNSBFZJQXJSAJEKQGWTTLGJBDBANZQANHCHIRELQNHRGSLXKWBPMBRKVGOPSYDLAECYXMSZVBIMLKAWKSRPIFADJXRIUXDAFWJYZGDLSXYVFPNFHLDDYYQLJNCNEYGIJZOZPKSEBXEYRGFSDRKOWSMMKJCTHEZFOLLESWGKECXEAAYRQLJBHIYYARYVDXPKCLPYZQPYGARZOYJGJLPNMUBPDBQHRZPWTPGIXBNQWOGVCEWXWPDWPIUIZKFAJOUBZTSNZFXACYUHMKLPFGDAZMMZOEAAEBHDPWJWEPUXXNOZYYRMKCCADVBQEDERXPWXDABELXYVHFLVULUURVHQZHKFLKMJSNSYSOCHPPSWMLHQHBATEGNYEXQEUOOBZHZQIIMANWBXLAHCUSAMYOVYUEILYMXOJKKDHXRDYBWWJXAHZLZKZHDGNAAHTAJRJBMLRQHPDSAMNJSAYSSVWBDNEBEHZDXZYRRJAPFNMHNUULOYCULDJHMHBJCLAKJFGLLIQHLBAQPOAIBHTNPMJRJVNXBMPSDPSNWIWJABXCBDHIIZKJKKGFVLVBCPNOOAFXLJYJSBESZNSIAZMCOHCVYOPHBUFTDWJDOXGLDHPZ",
@@ -272,7 +269,7 @@ test "regression test 1" {
             .columns = &table_columns,
             .primary_key_column_index = 0,
         } };
-        _ = try db.execute_query(create_table_query);
+        _ = try db.execute_query(create_table_query, arena.allocator());
     }
 
     const rand = std.crypto.random;
@@ -293,10 +290,10 @@ test "regression test 1" {
         } } };
 
         //std.debug.print("Inserting key: {s}\n", .{str});
-        _ = try db.execute_query(insert_query);
+        _ = try db.execute_query(insert_query, arena.allocator());
         //std.debug.print("insert_result: {any}\n", .{insert_result});
 
-        var metadata = try db.execute_query(select_metadata_query);
+        var metadata = try db.execute_query(select_metadata_query, arena.allocator());
         //metadata.data.select_table_info .print();
         try validate_btree(&metadata.data.select_table_info);
     }
@@ -324,7 +321,7 @@ test "regressoion test 2" {
 
     const table_name = "stress_test";
     const select_metadata_query = Query{
-        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name },
     };
     const insert_keys: [7][]const u8 = .{
         "JLJCGFUPJQQPHZSYLYKZVFDUJDPDEHJHJAKOPQDFJDBTQKTVJLTAWHMHSLXFYFCDJYWDFCBWFJULCJNXPSUEJXIFWVZPDDKXHFSBPKVTLLNWYFANTWLLVVFHDFTDUZNZGFJZDPYWRXPVONHLDUFJARBIFNVYFUIGNDGSVEAHKOIQXWFNFYVZMIQXJTCELQXTJIYUIGLZSQHQHAAAHAZDAYPUQWRRBYXUXJDYJMEIBFTKVCUMUXJPRHUKEFGMXEJYKGYENZWPSUQLJLUBJIAPFQTFNAUJXKQREQFHFIHYCNPEDLGHPUAWKCAZRBJNFKQGRTAPMUSNRTDUDDMEEYZKTIQWYAEDARJAQNYBRPISOQJDOZHLTLEPCNVXDCANACDDHEAGIJUYMHPWCHQVVBAQJQGETTBNSZPENUIRZLYIYHRSKXLXVNBXBUJMAHFBWUGHCHPIDDWDMEKCDYFRBOKJDRFQGWOJMNASMWBKAGNYRGAOCPXICQZHRXSDZAHTKXAPZNLCMGRFNYVNORZCTCSLGWZZFQCKWBARIMJRRRDSZIFDBFKZEOUKIUUNHAKVCYWMFJCSGKMVICLGQLJODQGIUMAWSWGRWWHSGBBDZBBTKDIFREETMMCAPLCGHLCFIFORKBLIBJORJNQNIBIQFDDHWLVMTCABTMWNBDUROBITULTQLFTSKNULFHULKKFBPYTNNRWPOKDFRWPRAVINPDPTEZPMQVDKCOBBKRGLGRUFCIKJNABAFPNYSJDBXYWTKRDHDCMPQGKAJWXOUHKNUHFDFXKKXLGRANJVGJRVINHLNKTFEIORJQXTCPGDUIAPVSBAVYELRYOTHHZRKKPVPIVNERAIQRXMNYWMMQLTKZNUJSHVZFHCDGAVABLYXNHAILGNFRINVNVUVGIUWDVVBNJSPAFLBDJTZHCHODXHOHRQALVAWSCKFTZTIBDCZQJHPOSADXMYREJVDRBXVAJLDLIRQUYEWRHHPDEZYQPXEKPAAUGJGBZBJGTAWFVULHUQPYOTGDAFGLEJDKFAYBRJFMNAGWIXBPGXGJDIHPPRJRKJAWXPOXIVPTYAHLVFQSYUCYYBHNICGTGZWVLYLOXRNLQLPWMUKOJIBKAYBTDYYLOEZYCXUUDRCMLXELPTIAAYHIUCOLOEVBYCBYQGGMVDYYSGITWQDOSIFKULGFIPOQCCWLEPXWXBOHVFWQZKTPRFSOOZRKQQWQLHEMZDZLMCZPBLTCFKFUZQXFTFZKMWVZEDWDTTZDWNHALSXJPGRGXFDCPVHSLTGEVLQZDHXSBGGLTQNLXABDWJTUOPQDROXPEGNHHNOFGTOGRZXTROWJAGDMTFUMSYPYWNYRHSKSJCKXSFSNMZQUEJLYSLKDJQWJMGMJMCUVWVNBDALCMFBQAKTGBJJBROXCPGIIKEQKLOFPSBINCWLWXSMSYZRHPMYAPXOHIHGFRBQRSNGCLVULYRRKVQOORIDZAAJZBIZNYMYFVOQRDTDTIVBZBEKKPVUHHOEKHHKWCLAYVOPOCYLFHSVRYUKPDRPSEDZAZDUZDVKYQBCSIVRFGWVKNBVVJFFUZUDNCBIICLKJMTRGSMRIMKPKBNNVFGIHUSYROLTEVTUDHUTYXHOKUFDTRBGCGHNFZOIGFHCFXGWLUMPFFHKXKMGSIKMFBZZRWLEUUDRCAWCEMRAWBIKHIRRTCXGEDKJHHLOUKFSBPEOTFQXWWFBQNPORKLGCTNXMROSVWBINAHSXVPUTSSVHIUBVQHVDYBPNZSYIORPKDDDCYKLQJVUEUULTQCMKDQIYNIGMCYCTKGSFAAUJWBSTDJGGNTGATKQOYIENZVQPBOTGCFRTGTGHDPTWTDMSBQSTYKQTVYMNRKMSIBCOTJDZREDMEYMPMCPGLAHDPQCHDCQWCTHVOJAPUWRUUMNWCQGECHJAKHRMAEYHRQIWXPATVEOBLZEVTQCTVQAXJJOFKMYIOVBODRIPPEGYWNRVYZIQXNXKBUCISAZLLCRXNLMJROFXDRGQVMKEC",
@@ -356,7 +353,7 @@ test "regressoion test 2" {
             .columns = &table_columns,
             .primary_key_column_index = 0,
         } };
-        _ = try db.execute_query(create_table_query);
+        _ = try db.execute_query(create_table_query, arena.allocator());
     }
 
     const rand = std.crypto.random;
@@ -377,10 +374,10 @@ test "regressoion test 2" {
         } } };
 
         //std.debug.print("Inserting key: {s}\n", .{str});
-        _ = try db.execute_query(insert_query);
+        _ = try db.execute_query(insert_query, arena.allocator());
         //std.debug.print("insert_result: {any}\n", .{insert_result});
 
-        var metadata = try db.execute_query(select_metadata_query);
+        var metadata = try db.execute_query(select_metadata_query, arena.allocator());
         //metadata.data.select_table_info .print();
         try validate_btree(&metadata.data.select_table_info);
     }
@@ -428,7 +425,7 @@ test "stress test randomized inserts on 1000 entries" {
             .columns = &table_columns,
             .primary_key_column_index = 0,
         } };
-        _ = try db.execute_query(create_table_query);
+        _ = try db.execute_query(create_table_query, arena.allocator());
     }
 
     const get_insert_query = struct {
@@ -453,7 +450,7 @@ test "stress test randomized inserts on 1000 entries" {
 
     const rand = std.crypto.random;
     const select_metadata_query = Query{
-        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name },
     };
 
     var inserted_keys = std.ArrayList([2023]u8).init(allocator);
@@ -479,11 +476,11 @@ test "stress test randomized inserts on 1000 entries" {
             }
         }
 
-        const insert_response = try db.execute_query(get_insert_query(&key));
+        const insert_response = try db.execute_query(get_insert_query(&key), arena.allocator());
 
         if (exists) {
             assert(insert_response.is_error_result());
-            assert(insert_response.data.err.error_code == error.DuplicateKey);
+            assert(insert_response.err.code == error.DuplicateKey);
             // Don't count this towards successful inserts
         } else {
             // This should be a successful insert
@@ -493,7 +490,7 @@ test "stress test randomized inserts on 1000 entries" {
 
             // Validate every 100 successful insertions
             if (successful_inserts % 100 == 0) {
-                var metadata = try db.execute_query(select_metadata_query);
+                var metadata = try db.execute_query(select_metadata_query, arena.allocator());
                 try validate_btree(&metadata.data.select_table_info);
                 std.debug.print("Validated at {} successful inserts (attempt {}): Height {}, Leaf cells {}\n", .{
                     successful_inserts,
@@ -506,7 +503,7 @@ test "stress test randomized inserts on 1000 entries" {
     }
 
     // Final validation
-    var final_metadata = try db.execute_query(select_metadata_query);
+    var final_metadata = try db.execute_query(select_metadata_query, arena.allocator());
     try validate_btree(&final_metadata.data.select_table_info);
 
     std.debug.print("Test completed successfully!\n", .{});
@@ -523,7 +520,7 @@ test "stress test randomized inserts on 1000 entries" {
     //        .allocator = arena.allocator(),
     //    },
     //};
-    //_ = try db.execute_query(select_query);
+    //_ = try db.execute_query(select_query, arena.allocator());
     //arena.deinit();
 
     std.debug.print("Test success\n", .{});
@@ -573,7 +570,7 @@ test "stress test randomized operations on larger dataset" {
             .columns = &table_columns,
             .primary_key_column_index = 0,
         } };
-        _ = try db.execute_query(create_table_query);
+        _ = try db.execute_query(create_table_query, arena.allocator());
     }
 
     const get_insert_query = struct {
@@ -602,7 +599,7 @@ test "stress test randomized operations on larger dataset" {
     const rand = std.crypto.random;
     var delete_query: Query = Query{ .delete = .{ .table_name = table_name, .key = undefined } };
     const select_metadata_query = Query{
-        .select_table_info = .{ .table_name = table_name, .allocator = arena.allocator() },
+        .select_table_info = .{ .table_name = table_name },
     };
 
     var inserted_keys = std.ArrayList([2023]u8).init(allocator);
@@ -638,17 +635,17 @@ test "stress test randomized operations on larger dataset" {
             rand.int(i64),
             rand.float(f64),
             text_buffer[0..text_len],
-        ));
+        ), arena.allocator());
 
         if (exists) {
             assert(insert_response.is_error_result());
-            assert(insert_response.data.err.error_code == error.DuplicateKey);
+            assert(insert_response.err.code == error.DuplicateKey);
         } else {
             try inserted_keys.append(key);
 
             // Validate every 100 insertions
             if (i % 100 == 0) {
-                var metadata = try db.execute_query(select_metadata_query);
+                var metadata = try db.execute_query(select_metadata_query, arena.allocator());
                 try validate_btree(&metadata.data.select_table_info);
 
                 std.debug.print("Validated at step {}: {} keys inserted\n", .{ i, inserted_keys.items.len });
@@ -691,12 +688,12 @@ test "stress test randomized operations on larger dataset" {
             },
         } } };
 
-        const update_response = try db.execute_query(update_query);
+        const update_response = try db.execute_query(update_query, arena.allocator());
         assert(!update_response.is_error_result());
 
         // Validate every 100 updates
         if (i % 100 == 0) {
-            var metadata = try db.execute_query(select_metadata_query);
+            var metadata = try db.execute_query(select_metadata_query, arena.allocator());
             try validate_btree(&metadata.data.select_table_info);
 
             std.debug.print("Validated update step {}: {} keys updated so far\n", .{ i, i + 1 });
@@ -717,14 +714,14 @@ test "stress test randomized operations on larger dataset" {
         const key_to_delete = inserted_keys.swapRemove(random_index);
 
         delete_query.delete.key = .{ .txt = &key_to_delete };
-        const delete_response = try db.execute_query(delete_query);
+        const delete_response = try db.execute_query(delete_query, arena.allocator());
         assert(!delete_response.is_error_result());
 
         deleted_count += 1;
 
         // Validate every 50 deletions
         if (i % 50 == 0) {
-            var metadata = try db.execute_query(select_metadata_query);
+            var metadata = try db.execute_query(select_metadata_query, arena.allocator());
             try validate_btree(&metadata.data.select_table_info);
 
             std.debug.print("Validated deletion step {}: {} keys remaining\n", .{ i, inserted_keys.items.len });
@@ -744,7 +741,7 @@ test "stress test randomized operations on larger dataset" {
             const key_to_delete = inserted_keys.swapRemove(random_index);
 
             delete_query.delete.key = .{ .txt = &key_to_delete };
-            const delete_response = try db.execute_query(delete_query);
+            const delete_response = try db.execute_query(delete_query, arena.allocator());
             assert(!delete_response.is_error_result());
         } else {
             // Insert operation
@@ -773,11 +770,11 @@ test "stress test randomized operations on larger dataset" {
                 rand.int(i64),
                 rand.float(f64),
                 text_buffer[0..text_len],
-            ));
+            ), arena.allocator());
 
             if (exists) {
                 assert(insert_response.is_error_result());
-                assert(insert_response.data.err.error_code == error.DuplicateKey);
+                assert(insert_response.err.code == error.DuplicateKey);
             } else {
                 try inserted_keys.append(key);
             }
@@ -785,7 +782,7 @@ test "stress test randomized operations on larger dataset" {
 
         // Validate every 100 operations
         if (i % 100 == 0) {
-            var metadata = try db.execute_query(select_metadata_query);
+            var metadata = try db.execute_query(select_metadata_query, arena.allocator());
             try validate_btree(&metadata.data.select_table_info);
 
             std.debug.print("Validated mixed operation step {}: {} keys\n", .{ i, inserted_keys.items.len });
@@ -814,7 +811,7 @@ test "stress test randomized operations on larger dataset" {
             @as(i64, @intCast(i)),
             @as(f64, @floatFromInt(i)) * 3.14159,
             text_buffer[0..text_len],
-        ));
+        ), arena.allocator());
 
         if (!insert_response.is_error_result()) {
             try inserted_keys.append(key);
@@ -822,13 +819,13 @@ test "stress test randomized operations on larger dataset" {
 
         // Validate every 50 insertions
         if (i % 50 == 0) {
-            var metadata = try db.execute_query(select_metadata_query);
+            var metadata = try db.execute_query(select_metadata_query, arena.allocator());
             try validate_btree(&metadata.data.select_table_info);
         }
     }
 
     // Final comprehensive validation
-    var final_metadata = try db.execute_query(select_metadata_query);
+    var final_metadata = try db.execute_query(select_metadata_query, arena.allocator());
     try validate_btree(&final_metadata.data.select_table_info);
 
     std.debug.print("Final tree statistics:\n", .{});

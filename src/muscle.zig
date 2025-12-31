@@ -3,6 +3,7 @@ pub const database = @import("main/database.zig");
 pub const common = @import("common.zig");
 pub const storage = @import("storage.zig");
 pub const execution = @import("execution.zig");
+pub const parser = @import("parser.zig");
 
 //
 // @Todo Types below are internal and should not be exposed outside
@@ -37,17 +38,17 @@ pub const Value = union(enum) {
     bool: bool,
     txt: []const u8,
     bin: []const u8,
-    null: void,
+    null,
 };
 
 const DefaultValue = union(enum) {
-    null: void,
+    null,
     // "HH:MM:SS"
-    current_time: void,
+    current_time,
     // "YYYY-MM-DD"
-    current_date: void,
+    current_date,
     // "YYYY-MM-DD HH:MM:SS"
-    current_timestamp: void,
+    current_timestamp,
     // default can be any literan value also
     literal: Value,
 };

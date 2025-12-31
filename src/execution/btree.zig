@@ -14,34 +14,26 @@ const DBMetadataPage = page_types.DBMetadataPage;
 /// All operations maintain B-tree invariants through automatic balancing and splitting/merging of pages.
 pub const BTree = struct {
     metadata: *DBMetadataPage,
-    allocator: std.mem.Allocator,
     pager: *PageManager,
     root_page_number: muscle.PageNumber,
     // data type of *key* used inside the btree
     primary_key_data_type: muscle.DataType,
-
-    // used to store temp state that we will destroy inside btree.deinit()
-    arena: std.heap.ArenaAllocator,
+    arena: std.mem.Allocator,
 
     pub fn init(
         pager: *PageManager,
         metadata: *DBMetadataPage,
         root_page_number: muscle.PageNumber,
         primary_key_data_type: muscle.DataType,
-        allocator: std.mem.Allocator,
+        arena: std.mem.Allocator,
     ) BTree {
         return BTree{
             .pager = pager,
             .metadata = metadata,
-            .allocator = allocator,
             .root_page_number = root_page_number,
             .primary_key_data_type = primary_key_data_type,
-            .arena = std.heap.ArenaAllocator.init(allocator),
+            .arena = arena,
         };
-    }
-
-    pub fn deinit(self: *BTree) void {
-        self.arena.deinit();
     }
 
     const PathDetail = struct {
@@ -51,7 +43,7 @@ pub const BTree = struct {
     };
 
     fn search_internal(self: *const BTree, key: []const u8) !std.ArrayList(PathDetail) {
-        var path = std.ArrayList(PathDetail).init(self.allocator);
+        var path = std.ArrayList(PathDetail).init(self.arena);
         var page_number = self.root_page_number;
         var node = try self.pager.get_page(Page, page_number);
 
@@ -479,8 +471,7 @@ pub const BTree = struct {
         }
 
         // @important: return pointer to the heap memory
-        slice = try self.arena.allocator().dupe(u8, slice);
-        return slice;
+        return try self.arena.dupe(u8, slice);
     }
 
     // this updates the node assuming the needed space is available
@@ -615,14 +606,13 @@ pub const BTree = struct {
         cell_page_number: muscle.PageNumber,
         cell_slot_index: Page.SlotArrayIndex,
     ) !TreeChangeInfo {
-        var raw_cells = std.ArrayList([]u8).init(self.allocator);
-
-        defer {
-            for (raw_cells.items) |slice| {
-                self.allocator.free(slice);
-            }
-            raw_cells.deinit();
-        }
+        var raw_cells = std.ArrayList([]u8).init(self.arena);
+        //defer {
+        //    for (raw_cells.items) |slice| {
+        //        self.arena.free(slice);
+        //    }
+        //    raw_cells.deinit();
+        //}
 
         // collect cells
         for (siblings.slice()) |*s| {
@@ -632,28 +622,28 @@ pub const BTree = struct {
                 if (s.page_number == cell_page_number and slot == cell_slot_index) {
                     // if it's a new cell then we need to add this new cell before existing cell
                     if (is_new_cell) {
-                        bytes_slice = try self.allocator.alloc(u8, cell.size);
+                        bytes_slice = try self.arena.alloc(u8, cell.size);
                         cell.serialize(bytes_slice);
                         try raw_cells.append(bytes_slice);
 
                         // add existing cell
-                        bytes_slice = try self.allocator.dupe(u8, s.page.raw_cell_slice_at_slot(@intCast(slot)));
+                        bytes_slice = try self.arena.dupe(u8, s.page.raw_cell_slice_at_slot(@intCast(slot)));
                         try raw_cells.append(bytes_slice);
                     } else {
                         // skip adding existing cell and only add new cell
-                        bytes_slice = try self.allocator.alloc(u8, cell.size);
+                        bytes_slice = try self.arena.alloc(u8, cell.size);
                         cell.serialize(bytes_slice);
                         try raw_cells.append(bytes_slice);
                     }
                 } else {
-                    bytes_slice = try self.allocator.dupe(u8, s.page.raw_cell_slice_at_slot(@intCast(slot)));
+                    bytes_slice = try self.arena.dupe(u8, s.page.raw_cell_slice_at_slot(@intCast(slot)));
                     try raw_cells.append(bytes_slice);
                 }
             }
 
             // if we need to insert at last
             if (s.page_number == cell_page_number and cell_slot_index == s.page.num_slots) {
-                const bytes_slice = try self.allocator.alloc(u8, cell.size);
+                const bytes_slice = try self.arena.alloc(u8, cell.size);
                 cell.serialize(bytes_slice);
                 try raw_cells.append(bytes_slice);
             }
@@ -765,23 +755,22 @@ pub const BTree = struct {
         change_info: TreeChangeInfo,
     ) !void {
         var raw_cells = try std.ArrayList([]u8).initCapacity(
-            self.allocator,
+            self.arena,
             root.num_slots + 1,
         );
-
-        defer {
-            for (raw_cells.items) |slice| {
-                self.allocator.free(slice);
-            }
-            raw_cells.deinit();
-        }
+        //defer {
+        //    for (raw_cells.items) |slice| {
+        //        self.arena.free(slice);
+        //    }
+        //    raw_cells.deinit();
+        //}
 
         // first collect all cells before siblings
         const first_sibling_index = change_info.sibling_updates.get(0).sibling_slot_index;
         for (0..first_sibling_index) |slot| {
             var bytes_slice: []u8 = undefined;
 
-            bytes_slice = try self.allocator.dupe(u8, root.raw_cell_slice_at_slot(@intCast(slot)));
+            bytes_slice = try self.arena.dupe(u8, root.raw_cell_slice_at_slot(@intCast(slot)));
             try raw_cells.append(bytes_slice);
         }
 
@@ -809,7 +798,7 @@ pub const BTree = struct {
                 try self.get_divider_key(&sibling),
                 sibling_info.sibling_page_number,
             );
-            bytes_slice = try self.allocator.alloc(u8, cell.size);
+            bytes_slice = try self.arena.alloc(u8, cell.size);
             cell.serialize(bytes_slice);
             try raw_cells.append(bytes_slice);
         }
@@ -822,7 +811,7 @@ pub const BTree = struct {
 
                 const new_page = try self.pager.get_page(Page, new_page_number);
                 cell = Cell.init(try self.get_divider_key(&new_page), new_page_number);
-                const bytes_slice = try self.allocator.alloc(u8, cell.size);
+                const bytes_slice = try self.arena.alloc(u8, cell.size);
                 cell.serialize(bytes_slice);
                 try raw_cells.append(bytes_slice);
             }
@@ -834,7 +823,7 @@ pub const BTree = struct {
             for (last_sibling_index + 1..root.num_slots) |slot| {
                 var bytes_slice: []u8 = undefined;
 
-                bytes_slice = try self.allocator.dupe(u8, root.raw_cell_slice_at_slot(@intCast(slot)));
+                bytes_slice = try self.arena.dupe(u8, root.raw_cell_slice_at_slot(@intCast(slot)));
                 try raw_cells.append(bytes_slice);
             }
         }
@@ -902,14 +891,13 @@ pub const BTree = struct {
         var next_change_info = TreeChangeInfo{
             .sibling_updates = try SiblingUpdateInfo.init(0),
         };
-        var raw_cells = std.ArrayList([]u8).init(self.allocator);
-
-        defer {
-            for (raw_cells.items) |slice| {
-                self.allocator.free(slice);
-            }
-            raw_cells.deinit();
-        }
+        var raw_cells = std.ArrayList([]u8).init(self.arena);
+        //defer {
+        //    for (raw_cells.items) |slice| {
+        //        self.arena.free(slice);
+        //    }
+        //    raw_cells.deinit();
+        //}
 
         // first collect all cells inside the siblings
         // for all right_child's we will create a cell so that it's easy when we start putting them
@@ -925,7 +913,7 @@ pub const BTree = struct {
 
                 // collect cells before update
                 for (0..first_updated_slot_index) |slot_index| {
-                    bytes_slice = try self.allocator.dupe(u8, sibling.raw_cell_slice_at_slot(@intCast(slot_index)));
+                    bytes_slice = try self.arena.dupe(u8, sibling.raw_cell_slice_at_slot(@intCast(slot_index)));
                     try raw_cells.append(bytes_slice);
                 }
 
@@ -943,7 +931,7 @@ pub const BTree = struct {
                         try self.get_divider_key(&node),
                         info.sibling_page_number,
                     );
-                    bytes_slice = try self.allocator.alloc(u8, cell.size);
+                    bytes_slice = try self.arena.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
                     try raw_cells.append(bytes_slice);
                 }
@@ -952,7 +940,7 @@ pub const BTree = struct {
                 if (change_info.newly_created_page) |new_page_number| {
                     const new_page = try self.pager.get_page(Page, new_page_number);
                     const cell = Cell.init(try self.get_divider_key(&new_page), new_page_number);
-                    bytes_slice = try self.allocator.alloc(u8, cell.size);
+                    bytes_slice = try self.arena.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
                     try raw_cells.append(bytes_slice);
                 }
@@ -967,11 +955,11 @@ pub const BTree = struct {
                                 try self.get_divider_key(&right_child),
                                 sibling.right_child,
                             );
-                            bytes_slice = try self.allocator.alloc(u8, cell.size);
+                            bytes_slice = try self.arena.alloc(u8, cell.size);
                             cell.serialize(bytes_slice);
                             try raw_cells.append(bytes_slice);
                         } else {
-                            bytes_slice = try self.allocator.dupe(
+                            bytes_slice = try self.arena.dupe(
                                 u8,
                                 sibling.raw_cell_slice_at_slot(@intCast(slot_index)),
                             );
@@ -981,7 +969,7 @@ pub const BTree = struct {
                 }
             } else {
                 for (0..sibling.num_slots) |slot| {
-                    bytes_slice = try self.allocator.dupe(u8, sibling.raw_cell_slice_at_slot(@intCast(slot)));
+                    bytes_slice = try self.arena.dupe(u8, sibling.raw_cell_slice_at_slot(@intCast(slot)));
                     try raw_cells.append(bytes_slice);
                 }
 
@@ -992,7 +980,7 @@ pub const BTree = struct {
                         try self.get_divider_key(&right_child),
                         sibling.right_child,
                     );
-                    bytes_slice = try self.allocator.alloc(u8, cell.size);
+                    bytes_slice = try self.arena.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
                     try raw_cells.append(bytes_slice);
                 }

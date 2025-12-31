@@ -1,6 +1,7 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
-const QueryResult = @import("QueryResult.zig");
+const query_result = @import("query_result.zig");
+const QueryContext = @import("QueryContext.zig");
 
 const print = std.debug.print;
 const assert = std.debug.assert;
@@ -10,9 +11,9 @@ const page_types = muscle.storage.page_types;
 const PageManager = muscle.storage.PageManager;
 const serde = muscle.common.serde;
 // @Todo should this be temporary?
-pub const SelectTableMetadataResult = QueryResult.SelectTableMetadataResult;
-pub const SelectDatabaseMetadataResult = QueryResult.SelectDatabaseMetadataResult;
-pub const SelectResult = QueryResult.SelectResult;
+pub const SelectTableMetadataResult = query_result.SelectTableMetadataResult;
+pub const SelectDatabaseMetadataResult = query_result.SelectDatabaseMetadataResult;
+pub const SelectResult = query_result.SelectResult;
 
 // The database object. This is main API to interact with the database.
 pub const Muscle = struct {
@@ -33,7 +34,16 @@ pub const Muscle = struct {
         self.pager.deinit();
     }
 
-    pub fn execute_query(self: *Muscle, query: Query) !QueryResult {
+    //pub fn execute(self: *Muscle, query: []const u8, arena: std.mem.Allocator) !void {
+    //    var parser = muscle.parser.Parser.init(query);
+    //    const statements = parser.parse();
+
+    //    print("statements {any}\n", .{statements});
+    //}
+
+    pub fn execute_query(self: *Muscle, query: Query, arena: std.mem.Allocator) !query_result.QueryResult {
+        var context = QueryContext.init(arena);
+
         var is_update_query = false;
         var should_rollback = false;
 
@@ -46,68 +56,62 @@ pub const Muscle = struct {
         // we never keep it in journal to keep the journal simpler.
         //
         var metadata_page = try self.pager.get_page(page_types.DBMetadataPage, 0);
-        const parsed = try metadata_page.parse_tables(self.allocator);
+        const parsed = try metadata_page.parse_tables(arena);
         const tables = parsed.value;
-        defer {
-            parsed.deinit();
-        }
-
-        var results: QueryResult = undefined;
 
         switch (query) {
             Query.create_table => |payload| {
                 is_update_query = true;
-                results = self.create_table(&metadata_page, tables, payload) catch |err| {
+                self.create_table(&metadata_page, &context, tables, payload) catch |err| {
                     should_rollback = true;
-                    return try maybe_create_client_error_response(err);
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.drop_table => |payload| {
                 is_update_query = true;
-                results = self.drop_table(&metadata_page, tables, payload) catch |err| {
+                self.drop_table(&metadata_page, tables, payload) catch |err| {
                     should_rollback = true;
-                    return try maybe_create_client_error_response(err);
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.insert => |payload| {
                 is_update_query = true;
-                results = self.insert(&metadata_page, tables, payload) catch |err| {
+                self.insert(&metadata_page, &context, tables, payload) catch |err| {
                     should_rollback = true;
-                    return try maybe_create_client_error_response(err);
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.update => |payload| {
                 is_update_query = true;
-                results = self.update(&metadata_page, tables, payload) catch |err| {
+                self.update(&metadata_page, &context, tables, payload) catch |err| {
                     should_rollback = true;
-                    return try maybe_create_client_error_response(err);
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.delete => |payload| {
                 is_update_query = true;
-                results = self.delete(&metadata_page, tables, payload) catch |err| {
+                self.delete(&metadata_page, &context, tables, payload) catch |err| {
                     should_rollback = true;
-                    return try maybe_create_client_error_response(err);
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.select => |payload| {
-                results = self.select(&metadata_page, tables, payload) catch |err| {
-                    return try maybe_create_client_error_response(err);
+                self.select(&metadata_page, &context, tables, payload) catch |err| {
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.select_table_info => |payload| {
-                results = self.select_table_info(&metadata_page, tables, payload) catch |err| {
-                    return try maybe_create_client_error_response(err);
+                self.select_table_info(&metadata_page, &context, tables, payload) catch |err| {
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.select_database_info => {
-                results = self.select_database_info(&metadata_page) catch |err| {
-                    return try maybe_create_client_error_response(err);
+                self.select_database_info(&metadata_page, &context) catch |err| {
+                    try maybe_create_client_error_response(&context, err);
                 };
             },
         }
 
-        // Handle rollback/commit logic
         if (should_rollback) {
             print("Processing failed. Calling Rollback.\n", .{});
             self.pager.rollback() catch |rollback_err| {
@@ -123,15 +127,15 @@ pub const Muscle = struct {
             };
         }
 
-        return results;
+        return context.result;
     }
 
     // gracefully resolves client errors and creates error QueryResult
-    fn maybe_create_client_error_response(err: anyerror) !QueryResult {
+    fn maybe_create_client_error_response(context: *QueryContext, err: anyerror) !void {
         const classification = errors.classify_error(err);
         switch (classification) {
             .client => {
-                return QueryResult.error_result(err, @errorName(err));
+                try context.set_err(err, "Unhandled client error: {any}. Should probably have a nicer error message.", .{err});
             },
             .system => {
                 return err;
@@ -142,15 +146,12 @@ pub const Muscle = struct {
     fn create_table(
         self: *Muscle,
         metadata: *page_types.DBMetadataPage,
+        query_context: *QueryContext,
         tables: []muscle.Table,
         payload: CreateTablePayload,
-    ) !QueryResult {
-        var tables_list = try std.ArrayList(muscle.Table).initCapacity(self.allocator, tables.len + 1);
-        var columns = try std.ArrayList(muscle.Column).initCapacity(self.allocator, payload.columns.len + 1);
-        defer {
-            tables_list.deinit();
-            columns.deinit();
-        }
+    ) !void {
+        var tables_list = try std.ArrayList(muscle.Table).initCapacity(query_context.arena, tables.len + 1);
+        var columns = try std.ArrayList(muscle.Column).initCapacity(query_context.arena, payload.columns.len + 1);
 
         for (tables) |table| {
             if (std.mem.eql(u8, table.name, payload.table_name)) {
@@ -236,11 +237,9 @@ pub const Muscle = struct {
         try tables_list.append(table);
 
         // update tables
-        try metadata.set_tables(self.allocator, tables_list.items[0..]);
+        try metadata.set_tables(query_context.arena, tables_list.items[0..]);
         // update metadata
         try self.pager.update_page(0, metadata);
-
-        return QueryResult.success_result(.{ .__void = {} });
     }
 
     fn drop_table(
@@ -248,7 +247,7 @@ pub const Muscle = struct {
         metadata: *page_types.DBMetadataPage,
         tables: []muscle.Table,
         payload: DropTablePayload,
-    ) !QueryResult {
+    ) !void {
         _ = self;
         _ = metadata;
         _ = tables;
@@ -260,9 +259,10 @@ pub const Muscle = struct {
     fn insert(
         self: *Muscle,
         metadata_page: *page_types.DBMetadataPage,
+        context: *QueryContext,
         tables: []muscle.Table,
         payload: InsertPayload,
-    ) !QueryResult {
+    ) !void {
         var table: ?*muscle.Table = null;
         for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -393,25 +393,25 @@ pub const Muscle = struct {
             metadata_page,
             table.?.root,
             primary_key_type,
-            self.allocator,
+            context.arena,
         );
-        defer btree.deinit();
 
         try btree.insert(primary_key_bytes, buffer.constSlice());
 
         // update metadata
-        try metadata_page.set_tables(self.allocator, tables);
+        try metadata_page.set_tables(context.arena, tables);
         try self.pager.update_page(0, metadata_page);
 
-        return QueryResult.success_result(.{ .insert = .{ .rows_created = 1 } });
+        context.set_data(.{ .insert = .{ .rows_created = 1 } });
     }
 
     fn update(
         self: *Muscle,
         metadata_page: *page_types.DBMetadataPage,
+        context: *QueryContext,
         tables: []muscle.Table,
         payload: UpdatePayload,
-    ) !QueryResult {
+    ) !void {
         var table: ?*muscle.Table = null;
         for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -542,25 +542,25 @@ pub const Muscle = struct {
             metadata_page,
             table.?.root,
             primary_key_type,
-            self.allocator,
+            context.arena,
         );
-        defer btree.deinit();
 
         try btree.update(primary_key_bytes, buffer.constSlice());
 
         // update metadata
-        try metadata_page.set_tables(self.allocator, tables);
+        try metadata_page.set_tables(context.arena, tables);
         try self.pager.update_page(0, metadata_page);
 
-        return QueryResult.success_result(.{ .update = .{ .rows_affected = 1 } });
+        context.set_data(.{ .update = .{ .rows_affected = 1 } });
     }
 
     fn delete(
         self: *Muscle,
         metadata_page: *page_types.DBMetadataPage,
+        context: *QueryContext,
         tables: []muscle.Table,
         payload: DeletePayload,
-    ) !QueryResult {
+    ) !void {
         var table: ?*muscle.Table = null;
         for (tables) |*t| {
             if (std.mem.eql(u8, t.name, payload.table_name)) {
@@ -586,24 +586,22 @@ pub const Muscle = struct {
             metadata_page,
             table.?.root,
             table.?.columns[0].data_type,
-            self.allocator,
+            context.arena,
         );
-        defer btree.deinit();
 
         try btree.delete(buffer.constSlice());
 
         // update metadata
         try self.pager.update_page(0, metadata_page);
-
-        return QueryResult.success_result(.{ .__void = {} });
     }
 
     fn select(
         self: *Muscle,
         metadata: *page_types.DBMetadataPage,
+        context: *QueryContext,
         tables: []muscle.Table,
         payload: SelectPayload,
-    ) !QueryResult {
+    ) !void {
         _ = metadata;
 
         var table: ?muscle.Table = null;
@@ -617,11 +615,11 @@ pub const Muscle = struct {
             return error.TableNotFound;
         }
 
-        var result_columns = try std.ArrayList(muscle.Column).initCapacity(payload.allocator, payload.columns.len);
+        var result_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, payload.columns.len);
         var result = SelectResult{
             .columns = result_columns,
             .rows = try std.ArrayList(std.ArrayList(u8)).initCapacity(
-                payload.allocator,
+                context.arena,
                 payload.limit,
             ),
         };
@@ -675,7 +673,7 @@ pub const Muscle = struct {
 
             for (0..curr_page.num_slots) |slot_index| {
                 const cell = curr_page.cell_at_slot(@intCast(slot_index));
-                var row_bytes = std.ArrayList(u8).init(payload.allocator);
+                var row_bytes = std.ArrayList(u8).init(context.arena);
 
                 //print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page_types.Page.SlotArrayEntry) });
                 //serial += 1;
@@ -743,15 +741,16 @@ pub const Muscle = struct {
 
         //std.debug.print("\n\n*****************************************************************\n\n", .{});
 
-        return QueryResult.success_result(.{ .select = result });
+        context.set_data(.{ .select = result });
     }
 
     fn select_table_info(
         self: *Muscle,
         metadata: *page_types.DBMetadataPage,
+        context: *QueryContext,
         tables: []muscle.Table,
         payload: SelectTableMetadata,
-    ) !QueryResult {
+    ) !void {
         _ = metadata;
         var table: ?muscle.Table = null;
         for (tables) |t| {
@@ -775,9 +774,9 @@ pub const Muscle = struct {
             .btree_leaf_pages = 0,
             .btree_internal_pages = 0,
             .table_columns = try std.ArrayList(muscle.Column)
-                .initCapacity(payload.allocator, table.?.columns.len),
+                .initCapacity(context.arena, table.?.columns.len),
             .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata)
-                .init(payload.allocator),
+                .init(context.arena),
         };
 
         // copy columns
@@ -847,13 +846,10 @@ pub const Muscle = struct {
             }
         }
 
-        return QueryResult.success_result(.{ .select_table_info = result });
+        context.set_data(.{ .select_table_info = result });
     }
 
-    fn select_database_info(
-        self: *Muscle,
-        metadata: *page_types.DBMetadataPage,
-    ) !QueryResult {
+    fn select_database_info(self: *Muscle, metadata: *page_types.DBMetadataPage, context: *QueryContext) !void {
         var free_pages = try std.BoundedArray(muscle.PageNumber, 128).init(0);
 
         if (metadata.first_free_page > 0) {
@@ -884,7 +880,7 @@ pub const Muscle = struct {
 
         assert(metadata.free_pages == free_pages.len);
 
-        return QueryResult.success_result(.{ .select_database_info = SelectDatabaseMetadataResult{
+        context.set_data(.{ .select_database_info = SelectDatabaseMetadataResult{
             .n_total_pages = metadata.total_pages,
             .n_free_pages = metadata.free_pages,
             .first_free_page = metadata.first_free_page,
@@ -916,8 +912,6 @@ pub const UpdatePayload = InsertPayload;
 
 const SelectPayload = struct {
     table_name: []const u8,
-    // this is owner by caller where select will store data
-    allocator: std.mem.Allocator,
     // zero columns indicates we want all columns
     columns: []const []const u8 = &[_][]const u8{},
     // zero limit indicates we want all data
@@ -926,7 +920,6 @@ const SelectPayload = struct {
 
 const SelectTableMetadata = struct {
     table_name: []const u8,
-    allocator: std.mem.Allocator,
 };
 
 const DeletePayload = struct {
@@ -942,5 +935,5 @@ pub const Query = union(enum) {
     select: SelectPayload,
     delete: DeletePayload,
     select_table_info: SelectTableMetadata,
-    select_database_info: void,
+    select_database_info,
 };
