@@ -1,9 +1,11 @@
-pub const database = @import("main/database.zig");
+pub const database = @import("database.zig");
 
 pub const common = @import("common.zig");
 pub const storage = @import("storage.zig");
 pub const execution = @import("execution.zig");
 pub const parser = @import("parser.zig");
+pub const QueryContext = @import("QueryContext.zig");
+pub const query_result = @import("query_result.zig");
 
 //
 // @Todo Types below are internal and should not be exposed outside

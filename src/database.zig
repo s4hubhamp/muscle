@@ -1,5 +1,5 @@
 const std = @import("std");
-const muscle = @import("../muscle.zig");
+const muscle = @import("./muscle.zig");
 const query_result = @import("query_result.zig");
 const QueryContext = @import("QueryContext.zig");
 
@@ -10,6 +10,7 @@ const errors = muscle.common.errors;
 const page_types = muscle.storage.page_types;
 const PageManager = muscle.storage.PageManager;
 const serde = muscle.common.serde;
+
 // @Todo should this be temporary?
 pub const SelectTableMetadataResult = query_result.SelectTableMetadataResult;
 pub const SelectDatabaseMetadataResult = query_result.SelectDatabaseMetadataResult;
@@ -34,15 +35,17 @@ pub const Muscle = struct {
         self.pager.deinit();
     }
 
-    //pub fn execute(self: *Muscle, query: []const u8, arena: std.mem.Allocator) !void {
-    //    var parser = muscle.parser.Parser.init(query);
+    //pub fn execute(self: *Muscle, arena: std.mem.Allocator, query: []const u8) !void {
+    //    var context = QueryContext.init(arena, query);
+
+    //    var parser = muscle.parser.Parser.init(&context);
     //    const statements = parser.parse();
 
     //    print("statements {any}\n", .{statements});
     //}
 
     pub fn execute_query(self: *Muscle, query: Query, arena: std.mem.Allocator) !query_result.QueryResult {
-        var context = QueryContext.init(arena);
+        var context = QueryContext.init(arena, "");
 
         var is_update_query = false;
         var should_rollback = false;

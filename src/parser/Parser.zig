@@ -9,16 +9,14 @@ const UnaryOperator = @import("expression.zig").UnaryOperator;
 const assert = std.debug.assert;
 const Self = @This();
 
-allocator: std.mem.Allocator,
+context: *muscle.QueryContext,
 statements: std.ArrayList(Statement),
-input: []const u8,
 position: usize,
 
-pub fn init(allocator: std.mem.Allocator, input: []const u8) Self {
+pub fn init(context: *muscle.QueryContext) Self {
     return Self{
-        .input = input,
-        .allocator = allocator,
-        .statements = std.ArrayList(Statement).init(allocator),
+        .context = context,
+        .statements = std.ArrayList(Statement).init(context.arena),
         .position = 0,
     };
 }
@@ -39,7 +37,6 @@ fn advance(self: *Self) void {
     self.position += 1;
 }
 
-// @Todo error type
 fn parse_statement(self: *Self) !Statement {
     const token = try self.next_token();
 
@@ -60,29 +57,54 @@ fn parse_statement(self: *Self) !Statement {
                 .rollback => try self.parse_rollback(),
                 .commit => try self.parseCommit(),
 
-                else => error.UnknownStatement,
+                else => return self.set_err("Unsupported statement {s}\n", .{@tagName(kw)}),
             };
         },
-        else => return error.UnknownStatement,
+
+        else => return self.set_err("Unexpected token `{s}`", .{@tagName(token)}),
     };
+}
+
+fn set_err(self: *Self, comptime message: []const u8, args: anytype) Error {
+    var context_start = if (self.position >= 10) self.position - 10 else 0;
+    var context_end = @min(self.position + 10, self.context.input.len - 1);
+
+    while (!std.ascii.isWhitespace(self.context.input[context_start]) and context_start > 0) {
+        context_start -= 1;
+    }
+
+    while (!std.ascii.isWhitespace(self.context.input[context_end]) and context_end < self.context.input.len - 1) {
+        context_end += 1;
+    }
+
+    const context_str = self.context.input[context_start .. context_end + 1];
+
+    try self.context.set_err(
+        error.ParserError,
+        message ++ ", Parser error. --> " ++ " `{s}`\n",
+        args ++ .{context_str},
+    );
+
+    return error.ParserError;
 }
 
 fn parse_number(self: *Self) !u64 {
     const start = self.position;
-    while (self.position < self.input.len and std.ascii.isDigit(self.peek())) {
+
+    while (self.position < self.context.input.len and std.ascii.isDigit(self.peek())) {
         self.advance();
     }
-    return std.fmt.parseInt(u64, self.input[start..self.position], 10);
+    return std.fmt.parseInt(u64, self.context.input[start..self.position], 10);
 }
 
 fn skip_whitespace_and_comments(self: *Self) void {
-    while (self.position < self.input.len) {
+    while (self.position < self.context.input.len) {
         const c = self.peek();
         if (std.ascii.isWhitespace(c)) {
             self.advance();
-        } else if (c == '-' and self.position + 1 < self.input.len and self.input[self.position + 1] == '-') {
+        } else if (c == '-' and self.position + 1 < self.context.input.len and self.context.input[self.position + 1] == '-') {
             // Skip line comment
-            while (self.position < self.input.len and self.peek() != '\n') {
+            while (self.position < self.context.input.len and self.peek() != '\n') {
                 self.advance();
             }
         } else {
@@ -92,32 +114,27 @@ fn skip_whitespace_and_comments(self: *Self) void {
 }
 
 fn is_at_end(self: *const Self) bool {
-    return self.position >= self.input.len;
+    return self.position >= self.context.input.len;
 }
 
 fn peek(self: *const Self) u8 {
     if (self.is_at_end()) return 0;
-    return self.input[self.position];
+    return self.context.input[self.position];
 }
 
 fn parse_select(self: *Self) !Statement {
     const columns = try self.parse_select_list();
-    var order_by = std.ArrayList(Expression).init(self.allocator);
+    var order_by = std.ArrayList(Expression).init(self.context.arena);
     var where_clause: ?Expression = null;
     var limit: usize = 0;
 
     if (columns.items.len == 0) {
-        return error.InvalidStatement;
+        return error.ParserError;
     }
 
     try self.expect_keyword(.from);
 
-    const table_name: []const u8 = sw: switch (try self.next_token()) {
-        .identifier => |name| {
-            break :sw name;
-        },
-        else => return error.UnexpectedToken,
-    };
+    const table_name = try self.expect_identifier("Expected identifier for table name");
 
     if (try self.consume_optional_keyword(.where)) {
         where_clause = try self.parse_expression();
@@ -128,34 +145,37 @@ fn parse_select(self: *Self) !Statement {
         order_by = try self.parse_comma_separated_expressions();
     }
 
-    // if there is a token still left it must be limit otherwise it's a invalid token
-    if (try self.peek_token() != .eof) {
-        try self.expect_keyword(.limit);
+    if (try self.consume_optional_keyword(.limit)) {
         limit = try self.parse_limit();
     }
 
-    std.debug.print("columns: {any} where_clause: {any} \n", .{ columns.items, where_clause });
-    std.debug.print("position: {any} \n", .{self.position});
-    std.debug.print("order_by: {any} \n", .{order_by.items});
-    std.debug.print("limit: {any} \n", .{limit});
-    std.debug.print("\n", .{});
+    // consume semicolon, newline
+    self.skip_whitespace_and_comments();
 
-    return Statement{ .select = .{
-        .columns = columns,
-        .table = table_name,
-        .order_by = order_by,
-        .where = where_clause,
-        .limit = limit,
-    } };
+    if (try self.consume_optional_token(.newline) or
+        try self.consume_optional_token(.semicolon) or
+        try self.consume_optional_token(.eof))
+    {
+        return Statement{ .select = .{
+            .columns = columns,
+            .table = table_name,
+            .order_by = order_by,
+            .where = where_clause,
+            .limit = limit,
+        } };
+    }
+
+    return self.set_err("Unexepcted token `{s}`", .{self.token_to_string(try self.next_token())});
 }
 
 fn parse_select_list(self: *Self) !std.ArrayList(Expression) {
-    var columns = std.ArrayList(Expression).init(self.allocator);
+    var columns = std.ArrayList(Expression).init(self.context.arena);
 
     var star_is_found = false;
     var expr = try self.parse_expression();
     while (true) {
-        if (star_is_found) return error.InvalidStatement;
+        if (star_is_found) return self.set_err("'*' must be the only column in select list", .{});
+
         switch (expr) {
             .star => {
                 star_is_found = true;
@@ -184,22 +204,21 @@ fn parse_limit(self: *Self) !usize {
             switch (num.value) {
                 .int => |limit| {
                     if (limit < 0) {
-                        return error.UnexpectedToken;
+                        return self.set_err("{s} value must be non-negative, got {}", .{
+                            self.token_to_string(.{ .keyword = .limit }),
+                            limit,
+                        });
                     }
-
                     return @intCast(limit);
                 },
-                .real => {
-                    return error.UnexpectedToken;
-                },
-                else => {
-                    unreachable;
-                },
+                .real => return self.set_err("{s} value must be an integer, not a decimal", .{
+                    self.token_to_string(.{ .keyword = .limit }),
+                }),
+                else => unreachable,
             }
         },
-        else => {
-            return error.UnexpectedToken;
-        },
+
+        else => return self.set_err("Expected non-negative integer for {s}", .{self.token_to_string(.{ .keyword = .limit })}),
     }
 }
 
@@ -212,14 +231,14 @@ fn parse_comma_separated_expressions(self: *Self) !std.ArrayList(Expression) {
 // [`Token::Comma`].
 fn parse_comma_separated(
     self: *Self,
-    comptime subparser: fn (self: *Self) ParseError!Expression,
+    comptime subparser: fn (self: *Self) Error!Expression,
     required_parenthesis: bool,
 ) !std.ArrayList(Expression) {
     if (required_parenthesis) {
         try self.expect_token(.left_paren);
     }
 
-    var results = std.ArrayList(Expression).init(self.allocator);
+    var results = std.ArrayList(Expression).init(self.context.arena);
     try results.append(try subparser(self));
     while (try self.consume_optional_token(.comma)) {
         try results.append(try subparser(self));
@@ -236,9 +255,9 @@ fn parse_comma_separated(
 const Token = union(enum) {
     keyword: Keyword,
     identifier: []const u8,
-    newline,
     string: []const u8,
     number: []const u8,
+    newline,
     eq,
     neq,
     lt,
@@ -295,20 +314,18 @@ const Keyword = enum {
     explain,
 };
 
-const ParseError = error{
-    IntegerOutOfRange,
-    ExpectedToken,
-    InvalidExpression,
-} || TokenError || std.mem.Allocator.Error;
+const Error = error{
+    ParserError,
+} || std.mem.Allocator.Error;
 
 const UNARY_ARITHMETIC_OPERATOR_PRECEDENCE: u8 = 50;
 // Expression parsing using Pratt parsing
 // [tutorial]: https://eli.thegreenplace.net/2010/01/02/top-down-operator-precedence-parsing
-fn parse_expression(self: *Self) ParseError!Expression {
+fn parse_expression(self: *Self) Error!Expression {
     return self.parse_expr(0);
 }
 
-fn parse_expr(self: *Self, precedence: u8) ParseError!Expression {
+fn parse_expr(self: *Self, precedence: u8) Error!Expression {
     var expr = try self.parse_prefix();
     var next_precedence = try self.get_next_precedence();
 
@@ -321,7 +338,7 @@ fn parse_expr(self: *Self, precedence: u8) ParseError!Expression {
 }
 
 // Parses the beginning of an expression.
-fn parse_prefix(self: *Self) ParseError!Expression {
+fn parse_prefix(self: *Self) !Expression {
     const token = try self.next_token();
 
     switch (token) {
@@ -331,14 +348,7 @@ fn parse_prefix(self: *Self) ParseError!Expression {
         .keyword => |kw| switch (kw) {
             .true => return Expression{ .value = .{ .bool = true } },
             .false => return Expression{ .value = .{ .bool = false } },
-            else => {
-                std.debug.print("While parsing expression prefix received unexpected token {any} at position {}", .{
-                    kw,
-                    self.position,
-                });
-                std.debug.print("keyword {any} is not allowed inside expressions.", .{kw});
-                return ParseError.UnexpectedToken;
-            },
+            else => return self.set_err("Unexpcted keyword `{s}` while parsing expression", .{@tagName(kw)}),
         },
         .number => |num_str| {
             return try parse_num(num_str);
@@ -350,7 +360,7 @@ fn parse_prefix(self: *Self) ParseError!Expression {
                 else => unreachable,
             };
 
-            const expr_box = try self.allocator.create(Expression);
+            const expr_box = try self.context.arena.create(Expression);
             expr_box.* = try self.parse_expr(UNARY_ARITHMETIC_OPERATOR_PRECEDENCE);
 
             return Expression{ .unary_operation = .{ .operator = operator, .operand = expr_box } };
@@ -358,29 +368,29 @@ fn parse_prefix(self: *Self) ParseError!Expression {
         .left_paren => {
             const expr = try self.parse_expression();
             try self.expect_token(.right_paren);
-            const expr_box = try self.allocator.create(Expression);
+            const expr_box = try self.context.arena.create(Expression);
             expr_box.* = expr;
             return Expression{ .nested = expr_box };
         },
         .eof => {
-            @panic("Maybe control should not have reached here??");
+            return self.set_err("Unexpected end of input, expected expression", .{});
         },
-        else => return ParseError.UnexpectedToken,
+        else => return error.ParserError,
     }
 }
 
-fn parse_num(num_str: []const u8) ParseError!Expression {
+fn parse_num(num_str: []const u8) !Expression {
     // Check if the number contains a decimal point
     if (std.mem.indexOf(u8, num_str, ".")) |_| {
         // It's a float
         const parsed_float = std.fmt.parseFloat(f64, num_str) catch {
-            return ParseError.IntegerOutOfRange;
+            return error.ParserError;
         };
         return Expression{ .value = .{ .real = parsed_float } };
     } else {
         // It's an integer
         const parsed_int = std.fmt.parseInt(i64, num_str, 10) catch {
-            return ParseError.IntegerOutOfRange;
+            return error.ParserError;
         };
         return Expression{ .value = .{ .int = parsed_int } };
     }
@@ -388,7 +398,7 @@ fn parse_num(num_str: []const u8) ParseError!Expression {
 
 // Parses an infix expression in the form of
 // (left expr | operator | right expr).
-fn parse_infix(self: *Self, left: Expression, precedence: u8) ParseError!Expression {
+fn parse_infix(self: *Self, left: Expression, precedence: u8) !Expression {
     const token = try self.next_token();
 
     const operator: BinaryOperator = switch (token) {
@@ -405,15 +415,15 @@ fn parse_infix(self: *Self, left: Expression, precedence: u8) ParseError!Express
         .keyword => |kw| switch (kw) {
             .logical_and => .logical_and,
             .logical_or => .logical_or,
-            else => return ParseError.UnexpectedToken,
+            else => return error.ParserError,
         },
-        else => return ParseError.UnexpectedToken,
+        else => return error.ParserError,
     };
 
-    const left_box = try self.allocator.create(Expression);
+    const left_box = try self.context.arena.create(Expression);
     left_box.* = left;
 
-    const right_box = try self.allocator.create(Expression);
+    const right_box = try self.context.arena.create(Expression);
     right_box.* = try self.parse_expr(precedence);
 
     return Expression{ .binary_operation = .{ .left = left_box, .operator = operator, .right = right_box } };
@@ -436,12 +446,7 @@ fn get_next_precedence(self: *Self) !u8 {
     };
 }
 
-// @Todo this to be error union that has error messages and position. Also have more types.
-const TokenError = error{
-    StringNotClosed,
-    UnexpectedToken,
-};
-fn next_token(self: *Self) TokenError!Token {
+fn next_token(self: *Self) !Token {
     // This should not consume whitespaces automatically.
     self.skip_whitespace_and_comments();
 
@@ -499,7 +504,7 @@ fn next_token(self: *Self) TokenError!Token {
                 self.advance();
                 return Token.neq;
             }
-            return TokenError.UnexpectedToken;
+            return error.ParserError;
         },
         '(' => {
             self.advance();
@@ -520,11 +525,8 @@ fn next_token(self: *Self) TokenError!Token {
         '"', '\'' => return self.tokenize_string(),
         '0'...'9' => return self.tokenize_number(),
         else => {
-            if (is_part_of_ident_or_keyword(chr)) {
-                return self.tokenize_keyword_or_identifier();
-            }
-
-            return TokenError.UnexpectedToken;
+            if (is_part_of_ident_or_keyword(chr)) return self.tokenize_keyword_or_identifier();
+            return self.set_err("Unexpected character '{c}' at position {}", .{ chr, self.position });
         },
     }
 }
@@ -536,7 +538,7 @@ fn peek_token(self: *Self) !Token {
     return token;
 }
 // Parses a single quoted or double quoted string like `"this one"` into Token.string.
-fn tokenize_string(self: *Self) TokenError!Token {
+fn tokenize_string(self: *Self) !Token {
     const quote = self.peek();
     self.advance();
 
@@ -546,17 +548,17 @@ fn tokenize_string(self: *Self) TokenError!Token {
     }
 
     if (self.is_at_end()) {
-        return TokenError.StringNotClosed;
+        return error.ParserError;
     }
 
-    const string_value = self.input[start..self.position];
+    const string_value = self.context.input[start..self.position];
     self.advance(); // consume closing quote
 
     return Token{ .string = string_value };
 }
 
 // Tokenizes numbers like `1234`. Floats are not supported.
-fn tokenize_number(self: *Self) TokenError!Token {
+fn tokenize_number(self: *Self) !Token {
     const start = self.position;
     var has_decimal = false;
 
@@ -568,7 +570,7 @@ fn tokenize_number(self: *Self) TokenError!Token {
     // Check for decimal point
     if (!self.is_at_end() and self.peek() == '.') {
         // Look ahead to see if there's a digit after the decimal point
-        if (self.position + 1 < self.input.len and std.ascii.isDigit(self.input[self.position + 1])) {
+        if (self.position + 1 < self.context.input.len and std.ascii.isDigit(self.context.input[self.position + 1])) {
             has_decimal = true;
             self.advance(); // consume the '.'
 
@@ -579,24 +581,24 @@ fn tokenize_number(self: *Self) TokenError!Token {
         }
     }
 
-    const number_value = self.input[start..self.position];
+    const number_value = self.context.input[start..self.position];
 
     // Validate that we have at least one digit
     if (number_value.len == 0 or (has_decimal and number_value.len == 1)) {
-        return TokenError.UnexpectedToken;
+        return error.ParserError;
     }
 
     return Token{ .number = number_value };
 }
 
 // Attempts to parse an instance of Token.keyword or Token.identifier.
-fn tokenize_keyword_or_identifier(self: *Self) TokenError!Token {
+fn tokenize_keyword_or_identifier(self: *Self) !Token {
     const start = self.position;
     while (!self.is_at_end() and is_part_of_ident_or_keyword(self.peek())) {
         self.advance();
     }
 
-    const value = self.input[start..self.position];
+    const value = self.context.input[start..self.position];
     const keyword = try get_keyword(value);
 
     if (keyword) |k| {
@@ -606,10 +608,10 @@ fn tokenize_keyword_or_identifier(self: *Self) TokenError!Token {
     return Token{ .identifier = value };
 }
 
-fn get_keyword(value: []const u8) TokenError!?Keyword {
+fn get_keyword(value: []const u8) !?Keyword {
     var uppercase_buf: [256]u8 = undefined;
     if (value.len > uppercase_buf.len) {
-        return TokenError.UnexpectedToken;
+        return error.ParserError;
     }
 
     for (value, 0..) |c, i| {
@@ -691,9 +693,44 @@ fn consume_optional_token(self: *Self, optional: Token) !bool {
 fn expect_token(self: *Self, expected: Token) !void {
     const current = try self.next_token();
     if (!std.meta.eql(current, expected)) {
-        std.debug.print("Expected token {}, but got {}\n", .{ expected, current });
-        return error.UnexpectedToken;
+        return self.set_err(
+            "Expected `{s}`, but got `{s}`",
+            .{ self.token_to_string(expected), self.token_to_string(current) },
+        );
     }
+}
+
+fn expect_identifier(self: *Self, comptime expected_msg: []const u8) ![]const u8 {
+    const token = try self.next_token();
+    switch (token) {
+        .identifier => |name| return name,
+        else => return self.set_err(expected_msg ++ ", but got `{s}`", .{self.token_to_string(token)}),
+    }
+}
+
+fn token_to_string(self: *Self, token: Token) []const u8 {
+    return switch (token) {
+        .keyword => |kw| std.fmt.allocPrint(self.context.arena, "keyword '{s}'", .{@tagName(kw)}) catch @tagName(kw),
+        .identifier => |name| std.fmt.allocPrint(self.context.arena, "identifier '{s}'", .{name}) catch "identifier",
+        .string => |str| std.fmt.allocPrint(self.context.arena, "string '{s}'", .{str}) catch "string",
+        .number => |num| std.fmt.allocPrint(self.context.arena, "number '{s}'", .{num}) catch "number",
+        .newline => "newline",
+        .eq => "'='",
+        .neq => "'!='",
+        .lt => "'<'",
+        .gt => "'>'",
+        .lte => "'<='",
+        .gte => "'>='",
+        .star => "'*'",
+        .div => "'/'",
+        .plus => "'+'",
+        .minus => "'-'",
+        .left_paren => "'('",
+        .right_paren => "')'",
+        .comma => "','",
+        .semicolon => "';'",
+        .eof => "end of input",
+    };
 }
 
 fn is_part_of_ident_or_keyword(chr: u8) bool {
@@ -754,9 +791,110 @@ test "select" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    //var parser = Self.init("select a, sdf, from shubham where a = b order by a", arena.allocator());
-    //var parser = Self.init("select a * 3, sdf, from shubham where a = b = c", arena.allocator());
-    //var parser = Self.init("select  sdf from shubham where a = b order by \"shubham\"", arena.allocator());
-    var parser = Self.init(arena.allocator(), "select column_name from shubham limit 12");
-    _ = try parser.parse();
+    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var parser = Self.init(&context);
+
+    {
+        context.input = "invalid";
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select a,";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select *, a";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select *";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select * col";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select * from";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select * from duck dd";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select * from duck where a < 3 && b > 43";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select * from duck where a < limit";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select * from duck where a < 3 and b > 43 limit -12";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "select * from duck where a < 3 and b > 43 limit 12";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const select = statements[0];
+        try std.testing.expect(select.select.columns.items.len == 1);
+        try std.testing.expectEqualStrings(select.select.table, "duck");
+        try std.testing.expect(select.select.limit == 12);
+    }
 }
+
+// TODO
+// Current error handling does not report exact error position.
+// This can be improved by:
+// store the start position before starting to parse next token/expression in some variable inside parse_expression, expect_keyword, expect_token and if we don't get what we want we know exact start position from where the problem began.
+//

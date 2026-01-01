@@ -1,5 +1,28 @@
-// Add these error types at the top of your file
+pub const SchemaError = error{
+    TableNotFound,
+    DuplicateTableName,
+    ColumnDoesNotExist,
+    ColumnNotFound,
+    DuplicateColumnName,
+    DuplicateColumns,
+    DuplicateKey,
+    KeyNotFound,
+};
+
+pub const ConstraintError = error{
+    AutoIncrementColumnMustBeInteger,
+    BadPrimaryKeyType,
+    PrimaryKeyMaxLengthExceeded,
+};
+
+//pub const ClientError =
+//    SchemaError ||
+//    ConstraintError ||
+//    DomainViolationError;
+
 pub const ClientError = error{
+    ParserError,
+
     // Table/Schema errors
     TableNotFound,
     DuplicateTableName,

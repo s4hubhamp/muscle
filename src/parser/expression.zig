@@ -8,7 +8,7 @@ pub const Expression = union(enum) {
     unary_operation: UnaryOperation,
     nested: ?*Expression,
 
-    pub fn print(self: *Expression) void {
+    pub fn print(self: *const Expression) void {
         const std = @import("std");
 
         switch (self.*) {

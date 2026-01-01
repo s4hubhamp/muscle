@@ -1,5 +1,5 @@
 const std = @import("std");
-const muscle = @import("../muscle.zig");
+const muscle = @import("muscle.zig");
 
 pub const QueryResult = union(enum) {
     data: Data,
