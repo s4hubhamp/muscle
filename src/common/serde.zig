@@ -29,13 +29,6 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
 
 pub fn serailize_value(buffer: *std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
     switch (val) {
-        .bin => |blob| {
-            // len will take usize bytes
-            var tmp: [8]u8 = undefined;
-            std.mem.writeInt(usize, &tmp, blob.len, .little);
-            try buffer.appendSlice(&tmp);
-            try buffer.appendSlice(blob);
-        },
         .int => |i| {
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(i64, &tmp, i, .little);
@@ -50,11 +43,26 @@ pub fn serailize_value(buffer: *std.BoundedArray(u8, page_types.Page.CONTENT_MAX
             try buffer.append(if (b) 1 else 0);
         },
         .txt => |str| {
-            // len will take usize bytes
-            var tmp: [8]u8 = undefined; // @Todo: Maybe we don't need this to be usize?
-            std.mem.writeInt(usize, &tmp, str.len, .little);
+            var tmp: [2]u8 = undefined;
+            std.mem.writeInt(
+                u16,
+                &tmp,
+                @intCast(str.len), // safe because we check the length before reaching here
+                .little,
+            );
             try buffer.appendSlice(&tmp);
             try buffer.appendSlice(str);
+        },
+        .bin => |blob| {
+            var tmp: [2]u8 = undefined;
+            std.mem.writeInt(
+                u16,
+                &tmp,
+                @intCast(blob.len), // safe because we check the length before reaching here
+                .little,
+            );
+            try buffer.appendSlice(&tmp);
+            try buffer.appendSlice(blob);
         },
         .null => {
             // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example
@@ -78,12 +86,12 @@ pub fn deserialize_value(buffer: []const u8, data_type: muscle.DataType) muscle.
         },
         // strings and blobs are compared lexicographically
         .txt => {
-            const len = std.mem.readInt(usize, buffer[0..@sizeOf(usize)], .little);
-            return .{ .txt = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
+            const len = std.mem.readInt(u16, buffer[0..@sizeOf(u16)], .little);
+            return .{ .txt = buffer[@sizeOf(u16) .. @sizeOf(u16) + len] };
         },
         .bin => {
-            const len = std.mem.readInt(usize, buffer[0..@sizeOf(usize)], .little);
-            return .{ .bin = buffer[@sizeOf(usize) .. @sizeOf(usize) + len] };
+            const len = std.mem.readInt(u16, buffer[0..@sizeOf(u16)], .little);
+            return .{ .bin = buffer[@sizeOf(u16) .. @sizeOf(u16) + len] };
         },
         else => {
             // we don't support booleans as primary keys right now
@@ -117,20 +125,20 @@ pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []
             // But these asserts are faily cheap so we are gonna keep them as is.
             //
             // Ensure we have at least the length prefix
-            assert(a.len >= @sizeOf(usize));
-            assert(b.len >= @sizeOf(usize));
+            assert(a.len >= @sizeOf(u16));
+            assert(b.len >= @sizeOf(u16));
 
             // Read the lengths
-            const len_a = std.mem.readInt(usize, a[0..@sizeOf(usize)], .little);
-            const len_b = std.mem.readInt(usize, b[0..@sizeOf(usize)], .little);
+            const len_a = std.mem.readInt(u16, a[0..@sizeOf(u16)], .little);
+            const len_b = std.mem.readInt(u16, b[0..@sizeOf(u16)], .little);
 
             // Ensure the buffers contain the full data
-            assert(a.len >= @sizeOf(usize) + len_a);
-            assert(b.len >= @sizeOf(usize) + len_b);
+            assert(a.len >= @sizeOf(u16) + len_a);
+            assert(b.len >= @sizeOf(u16) + len_b);
 
             // Extract the actual data (skip the length prefix)
-            const data_a = a[@sizeOf(usize) .. @sizeOf(usize) + len_a];
-            const data_b = b[@sizeOf(usize) .. @sizeOf(usize) + len_b];
+            const data_a = a[@sizeOf(u16) .. @sizeOf(u16) + len_a];
+            const data_b = b[@sizeOf(u16) .. @sizeOf(u16) + len_b];
 
             // Compare lexicographically
             return std.mem.order(u8, data_a, data_b);

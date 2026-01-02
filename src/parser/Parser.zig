@@ -2,9 +2,12 @@ const std = @import("std");
 const muscle = @import("../muscle.zig");
 
 const Expression = @import("expression.zig").Expression;
-const Statement = @import("statement.zig").Statement;
 const BinaryOperator = @import("expression.zig").BinaryOperator;
 const UnaryOperator = @import("expression.zig").UnaryOperator;
+const statement = @import("statement.zig");
+
+const Statement = statement.Statement;
+const Assignment = statement.Assignment;
 
 const assert = std.debug.assert;
 const Self = @This();
@@ -33,26 +36,31 @@ pub fn parse(self: *Self) ![]Statement {
     return self.statements.items;
 }
 
-fn advance(self: *Self) void {
-    self.position += 1;
-}
-
 fn parse_statement(self: *Self) !Statement {
     const token = try self.next_token();
 
     return switch (token) {
         .keyword => |kw| {
             return switch (kw) {
-                .create => try self.parse_create(),
-                .drop => try self.parse_drop(),
+                .create => switch (try self.peek_token()) {
+                    Token{ .keyword = .table } => try self.parse_create_table(),
+                    else => return self.set_err("Unsupported create statement {s}\n", .{
+                        self.token_to_string(try self.peek_token()),
+                    }),
+                },
 
+                .drop => switch (try self.peek_token()) {
+                    Token{ .keyword = .table } => try self.parse_drop_table(),
+                    else => return self.set_err("Unsupported drop statement {s}\n", .{
+                        self.token_to_string(try self.peek_token()),
+                    }),
+                },
                 .select => try self.parse_select(),
                 .insert => try self.parse_insert(),
                 .update => try self.parse_update(),
                 .delete => try self.parse_delete(),
 
                 .explain => try self.parse_explain(),
-
                 .start => try self.parse_start(),
                 .rollback => try self.parse_rollback(),
                 .commit => try self.parseCommit(),
@@ -86,6 +94,10 @@ fn set_err(self: *Self, comptime message: []const u8, args: anytype) Error {
     );
 
     return error.ParserError;
+}
+
+fn advance(self: *Self) void {
+    self.position += 1;
 }
 
 fn parse_number(self: *Self) !u64 {
@@ -149,11 +161,7 @@ fn parse_select(self: *Self) !Statement {
         limit = try self.parse_limit();
     }
 
-    // consume semicolon, newline
-    self.skip_whitespace_and_comments();
-
-    if (try self.consume_optional_token(.newline) or
-        try self.consume_optional_token(.semicolon) or
+    if (try self.consume_optional_token(.semicolon) or
         try self.consume_optional_token(.eof))
     {
         return Statement{ .select = .{
@@ -225,6 +233,37 @@ fn parse_limit(self: *Self) !usize {
 // Used to parse the expressions after `SELECT`, `WHERE`, `SET` or `ORDER BY`.
 fn parse_comma_separated_expressions(self: *Self) !std.ArrayList(Expression) {
     return self.parse_comma_separated(Self.parse_expression, false);
+}
+fn parse_comma_separated_expressions_with_parantheses(self: *Self) !std.ArrayList(Expression) {
+    return self.parse_comma_separated(Self.parse_expression, true);
+}
+
+// Used to parse column names in "insert into ()"
+// Expects parantheses and checks for duplicates by default
+fn parse_comma_separated_identifiers(self: *Self) !std.ArrayList([]const u8) {
+    try self.expect_token(.left_paren);
+
+    var values = std.ArrayList([]const u8).init(self.context.arena);
+    var seen = std.StringHashMap(void).init(self.context.arena);
+    defer seen.deinit();
+
+    const first = try self.expect_identifier("Expected identifier");
+    try values.append(first);
+    try seen.put(first, {});
+
+    while (try self.consume_optional_token(.comma)) {
+        const val = try self.expect_identifier("Expected identifier");
+
+        if (seen.contains(val)) {
+            return self.set_err("Duplicate identifier name '{s}' in list", .{val});
+        }
+
+        try values.append(val);
+        try seen.put(val, {});
+    }
+
+    try self.expect_token(.right_paren);
+    return values;
 }
 
 // Takes a `subparser` as input and calls it after every instance of
@@ -298,7 +337,9 @@ const Keyword = enum {
     table,
     database,
     int,
+    real,
     txt,
+    bin,
     bool,
     true,
     false,
@@ -375,7 +416,10 @@ fn parse_prefix(self: *Self) !Expression {
         .eof => {
             return self.set_err("Unexpected end of input, expected expression", .{});
         },
-        else => return error.ParserError,
+
+        else => {
+            return self.set_err("Unexpected token {s}", .{self.token_to_string(token)});
+        },
     }
 }
 
@@ -447,10 +491,8 @@ fn get_next_precedence(self: *Self) !u8 {
 }
 
 fn next_token(self: *Self) !Token {
-    // This should not consume whitespaces automatically.
     self.skip_whitespace_and_comments();
 
-    // @Todo instead of sending eof can we use optional if there are no more tokens left?
     if (self.is_at_end()) {
         return Token.eof;
     }
@@ -640,8 +682,10 @@ fn get_keyword(value: []const u8) !?Keyword {
         .{ "TABLE", .table },
         .{ "DATABASE", .database },
         .{ "INT", .int },
-        .{ "TEXT", .txt },
+        .{ "REAL", .real },
         .{ "BOOL", .bool },
+        .{ "TEXT", .txt },
+        .{ "BINARY", .bin },
         .{ "TRUE", .true },
         .{ "FALSE", .false },
         .{ "ORDER", .order },
@@ -737,30 +781,267 @@ fn is_part_of_ident_or_keyword(chr: u8) bool {
     return std.ascii.isAlphanumeric(chr) or chr == '_';
 }
 
-// Placeholder implementations for other statement types
 fn parse_insert(self: *Self) !Statement {
-    _ = self;
-    unreachable;
+    try self.expect_keyword(.into);
+    const into = try self.expect_identifier("Expected identifier for table name");
+    var columns = std.ArrayList([]const u8).init(self.context.arena);
+    var values = std.ArrayList(Expression).init(self.context.arena);
+
+    if (try self.peek_token() == .left_paren) {
+        columns = try self.parse_comma_separated_identifiers();
+
+        if (columns.items.len == 0) {
+            return self.set_err("Column list cannot be empty. Expected at least one column name", .{});
+        }
+    }
+
+    try self.expect_keyword(.values);
+    values = try self.parse_comma_separated_expressions_with_parantheses();
+    if (values.items.len == 0) {
+        return self.set_err("Values list cannot be empty. Expected at least one value", .{});
+    }
+
+    if (columns.items.len > 0 and columns.items.len != values.items.len) {
+        return self.set_err("Column count ({}) does not match value count ({})", .{ columns.items.len, values.items.len });
+    }
+
+    if (try self.consume_optional_token(.semicolon) or
+        try self.consume_optional_token(.eof))
+    {
+        return Statement{ .insert = .{
+            .into = into,
+            .columns = columns,
+            .values = values,
+        } };
+    }
+
+    return self.set_err("Unexepcted token `{s}`", .{self.token_to_string(try self.next_token())});
 }
 
 fn parse_update(self: *Self) !Statement {
-    _ = self;
-    unreachable;
+    const table_name = try self.expect_identifier("Expected identifier for table name");
+
+    try self.expect_keyword(.set);
+
+    var assignments = std.ArrayList(Assignment).init(self.context.arena);
+    var seen_columns = std.StringHashMap(void).init(self.context.arena);
+
+    // Parse first assignment
+    const first_column = try self.expect_identifier("Expected column name after SET");
+    try self.expect_token(.eq);
+    const first_value = try self.parse_expression();
+
+    try assignments.append(.{ .column = first_column, .value = first_value });
+    try seen_columns.put(first_column, {});
+
+    // Parse additional assignments
+    while (try self.consume_optional_token(.comma)) {
+        const column = try self.expect_identifier("Expected column name");
+
+        // Check for duplicate column assignments
+        if (seen_columns.contains(column)) {
+            return self.set_err("Duplicate column assignment '{s}' in SET clause", .{column});
+        }
+
+        try self.expect_token(.eq);
+        const value = try self.parse_expression();
+
+        try assignments.append(.{ .column = column, .value = value });
+        try seen_columns.put(column, {});
+    }
+
+    // Parse optional WHERE clause
+    var where_clause: ?Expression = null;
+    if (try self.consume_optional_keyword(.where)) {
+        where_clause = try self.parse_expression();
+    }
+
+    // Expect statement termination
+    if (try self.consume_optional_token(.semicolon) or
+        try self.consume_optional_token(.eof))
+    {
+        return Statement{ .update = .{
+            .table = table_name,
+            .assignments = assignments,
+            .where = where_clause,
+        } };
+    }
+
+    return self.set_err("Unexpected token `{s}`", .{self.token_to_string(try self.next_token())});
+}
+
+fn parse_create_table(self: *Self) !Statement {
+    try self.expect_keyword(.table);
+
+    const table_name = try self.expect_identifier("Expected table name after CREATE TABLE");
+
+    try self.expect_token(.left_paren);
+
+    var columns = std.ArrayList(statement.ColumnDefinition).init(self.context.arena);
+    var seen_columns = std.StringHashMap(void).init(self.context.arena);
+    var primary_key_count: u32 = 0;
+
+    const first_column = try self.parse_column_definition(&seen_columns, &primary_key_count);
+    try columns.append(first_column);
+
+    while (try self.consume_optional_token(.comma)) {
+        const column = try self.parse_column_definition(&seen_columns, &primary_key_count);
+        try columns.append(column);
+    }
+
+    try self.expect_token(.right_paren);
+
+    if (try self.consume_optional_token(.semicolon) or
+        try self.consume_optional_token(.eof))
+    {
+        return Statement{ .create_table = .{ .table = table_name, .columns = columns } };
+    }
+
+    return self.set_err("Unexpected token `{s}`", .{self.token_to_string(try self.next_token())});
+}
+
+fn parse_column_definition(
+    self: *Self,
+    seen_columns: *std.StringHashMap(void),
+    primary_key_count: *u32,
+) !statement.ColumnDefinition {
+    const column_name = try self.expect_identifier("Expected column name");
+
+    if (seen_columns.contains(column_name)) {
+        return self.set_err("Duplicate column name '{s}' in table definition", .{column_name});
+    }
+    try seen_columns.put(column_name, {});
+
+    const column_type = try self.parse_column_type();
+
+    var is_primary_key = false;
+    var is_unique = false;
+
+    // constraints
+    while (true) {
+        if (try self.consume_optional_keyword(.primary)) {
+            try self.expect_keyword(.key);
+            if (is_primary_key) {
+                return self.set_err("Column '{s}' already marked as PRIMARY KEY", .{column_name});
+            }
+            is_primary_key = true;
+            primary_key_count.* += 1;
+
+            if (primary_key_count.* > 1) {
+                return self.set_err("Multiple PRIMARY KEY constraints are not allowed", .{});
+            }
+        } else if (try self.consume_optional_keyword(.unique)) {
+            if (is_unique) {
+                return self.set_err("Column '{s}' already marked as UNIQUE", .{column_name});
+            }
+            is_unique = true;
+        } else {
+            break;
+        }
+    }
+
+    return statement.ColumnDefinition{
+        .name = column_name,
+        .column_type = column_type,
+        .is_primary_key = is_primary_key,
+        .is_unique = is_unique,
+    };
+}
+
+fn parse_column_type(self: *Self) !muscle.DataType {
+    const token = try self.next_token();
+
+    switch (token) {
+        .keyword => |kw| switch (kw) {
+            .int => return .int,
+            .bool => return .bool,
+            .txt => {
+                // Check for optional size specification: TEXT(size)
+                if (try self.consume_optional_token(.left_paren)) {
+                    const size_token = try self.next_token();
+                    switch (size_token) {
+                        .number => |num_str| {
+                            const size = std.fmt.parseInt(u16, num_str, 10) catch {
+                                return self.set_err("Invalid size '{s}' for TEXT type. Size must be a positive integer", .{num_str});
+                            };
+
+                            if (size == 0) {
+                                return self.set_err("TEXT size must be greater than 0", .{});
+                            }
+
+                            try self.expect_token(.right_paren);
+                            return muscle.DataType{ .txt = size };
+                        },
+                        else => return self.set_err("Expected size (positive integer) after TEXT(, but got `{s}`", .{self.token_to_string(size_token)}),
+                    }
+                } else {
+                    // Default TEXT without size specification
+                    return muscle.DataType{ .txt = std.math.maxInt(u16) };
+                }
+            },
+            .bin => {
+                // Check for optional size specification: BINARY(size)
+                if (try self.consume_optional_token(.left_paren)) {
+                    const size_token = try self.next_token();
+                    switch (size_token) {
+                        .number => |num_str| {
+                            const size = std.fmt.parseInt(u16, num_str, 10) catch {
+                                return self.set_err("Invalid size '{s}' for BINARY type. Size must be a positive integer", .{num_str});
+                            };
+
+                            if (size == 0) {
+                                return self.set_err("BINARY size must be greater than 0", .{});
+                            }
+
+                            try self.expect_token(.right_paren);
+                            return muscle.DataType{ .bin = size };
+                        },
+                        else => return self.set_err("Expected size (positive integer) after BINARY(, but got `{s}`", .{self.token_to_string(size_token)}),
+                    }
+                } else {
+                    // Default BINARY without size specification
+                    return muscle.DataType{ .bin = std.math.maxInt(u16) };
+                }
+            },
+            .real => return .real,
+            else => return self.set_err("Invalid column type '{s}'", .{@tagName(kw)}),
+        },
+        else => return self.set_err("Expected column type (INT, TEXT, BINARY, REAL, or BOOL), but got `{s}`", .{self.token_to_string(token)}),
+    }
+}
+
+fn parse_drop_table(self: *Self) !Statement {
+    try self.expect_keyword(.table);
+    const table_name = try self.expect_identifier("Expected table name after DROP TABLE");
+
+    if (try self.consume_optional_token(.semicolon) or
+        try self.consume_optional_token(.eof))
+    {
+        return Statement{ .drop_table = .{ .table = table_name } };
+    }
+
+    return self.set_err("Unexpected token `{s}`", .{self.token_to_string(try self.next_token())});
 }
 
 fn parse_delete(self: *Self) !Statement {
-    _ = self;
-    unreachable;
-}
+    try self.expect_keyword(.from);
+    const from = try self.expect_identifier("Expected table name after DELETE FROM");
 
-fn parse_drop(self: *Self) !Statement {
-    _ = self;
-    unreachable;
-}
+    var where_clause: ?Expression = null;
+    if (try self.consume_optional_keyword(.where)) {
+        where_clause = try self.parse_expression();
+    }
 
-fn parse_create(self: *Self) !Statement {
-    _ = self;
-    unreachable;
+    if (try self.consume_optional_token(.semicolon) or
+        try self.consume_optional_token(.eof))
+    {
+        return Statement{ .delete = .{
+            .from = from,
+            .where = where_clause,
+        } };
+    }
+
+    return self.set_err("Unexpected token `{s}`", .{self.token_to_string(try self.next_token())});
 }
 
 fn parse_explain(self: *Self) !Statement {
@@ -787,7 +1068,7 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-test "select" {
+test "parseSelect" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -890,6 +1171,875 @@ test "select" {
         try std.testing.expect(select.select.columns.items.len == 1);
         try std.testing.expectEqualStrings(select.select.table, "duck");
         try std.testing.expect(select.select.limit == 12);
+    }
+}
+
+test "parseInsert" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var parser = Self.init(&context);
+
+    {
+        context.input = "insert";
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (col1, col2)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (col1, col2) values";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck () values ()";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (col1) values ()";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (col1, col1) values (val)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (col1, col2) values (val)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (col1, col2) values (val, val) &";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "insert into duck (col1, col2) values (val, val) ;";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+
+        try std.testing.expect(!context.result.is_error_result());
+        const insert = statements[0].insert;
+        try std.testing.expectEqualStrings(insert.into, "duck");
+        try std.testing.expectEqualStrings(insert.columns.items[0], "col1");
+        try std.testing.expectEqualStrings(insert.columns.items[1], "col2");
+        try std.testing.expect(insert.values.items.len == 2);
+    }
+}
+
+test "parseUpdate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var parser = Self.init(&context);
+
+    {
+        context.input = "update";
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set name";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set name =";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set name = 'John', name = 'Jane'";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set name = 'John', age = 25,";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set name = 'John' where";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set name = 'John' &";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    {
+        context.input = "update users set name = 'John';";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const update = statements[0];
+        try std.testing.expect(update == .update);
+        try std.testing.expectEqualStrings(update.update.table, "users");
+        try std.testing.expect(update.update.assignments.items.len == 1);
+        try std.testing.expectEqualStrings(update.update.assignments.items[0].column, "name");
+        try std.testing.expect(update.update.where == null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    {
+        context.input = "update products set price = 99.99, stock = 50 where id = 1";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const update = statements[0];
+        try std.testing.expect(update == .update);
+        try std.testing.expectEqualStrings(update.update.table, "products");
+        try std.testing.expect(update.update.assignments.items.len == 2);
+        try std.testing.expectEqualStrings(update.update.assignments.items[0].column, "price");
+        try std.testing.expectEqualStrings(update.update.assignments.items[1].column, "stock");
+        try std.testing.expect(update.update.where != null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+}
+
+test "parseCreateTable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var parser = Self.init(&context);
+
+    // Test: Missing TABLE keyword
+    {
+        context.input = "create";
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Missing table name
+    {
+        context.input = "create table";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Missing opening parenthesis
+    {
+        context.input = "create table users";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Empty column list
+    {
+        context.input = "create table users ()";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Missing column type
+    {
+        context.input = "create table users (id)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Invalid column type
+    {
+        context.input = "create table users (id varchar)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Duplicate column names
+    {
+        context.input = "create table users (id int, id text)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Multiple primary keys
+    {
+        context.input = "create table users (id int primary key, email text primary key)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Duplicate constraints on same column
+    {
+        context.input = "create table users (id int primary key primary key)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Duplicate UNIQUE constraints on same column
+    {
+        context.input = "create table users (email text unique unique)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Missing closing parenthesis
+    {
+        context.input = "create table users (id int";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Invalid TEXT size (zero)
+    {
+        context.input = "create table users (name text(0))";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Invalid TEXT size (non-numeric)
+    {
+        context.input = "create table users (name text(abc))";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Invalid BINARY size (zero)
+    {
+        context.input = "create table files (data binary(0))";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Missing closing parenthesis for TEXT size
+    {
+        context.input = "create table users (name text(255)";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Unexpected token after table definition
+    {
+        context.input = "create table users (id int) &";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Simple table with basic types
+    {
+        context.input = "create table users (id int, name text, active bool);";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const create = statements[0];
+        try std.testing.expect(create == .create_table);
+        try std.testing.expectEqualStrings(create.create_table.table, "users");
+        try std.testing.expect(create.create_table.columns.items.len == 3);
+
+        // Check first column
+        try std.testing.expectEqualStrings(create.create_table.columns.items[0].name, "id");
+        try std.testing.expect(create.create_table.columns.items[0].column_type == .int);
+        try std.testing.expect(!create.create_table.columns.items[0].is_primary_key);
+        try std.testing.expect(!create.create_table.columns.items[0].is_unique);
+
+        // Check second column
+        try std.testing.expectEqualStrings(create.create_table.columns.items[1].name, "name");
+        try std.testing.expect(create.create_table.columns.items[1].column_type.txt == std.math.maxInt(u16));
+
+        // Check third column
+        try std.testing.expectEqualStrings(create.create_table.columns.items[2].name, "active");
+        try std.testing.expect(create.create_table.columns.items[2].column_type == .bool);
+
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Table with primary key and constraints
+    {
+        context.input = "create table products (id int primary key, name text(100) unique, price real, description text)";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const create = statements[0];
+        try std.testing.expect(create == .create_table);
+        try std.testing.expectEqualStrings(create.create_table.table, "products");
+        try std.testing.expect(create.create_table.columns.items.len == 4);
+
+        // Check primary key column
+        try std.testing.expectEqualStrings(create.create_table.columns.items[0].name, "id");
+        try std.testing.expect(create.create_table.columns.items[0].column_type == .int);
+        try std.testing.expect(create.create_table.columns.items[0].is_primary_key);
+        try std.testing.expect(!create.create_table.columns.items[0].is_unique);
+
+        // Check unique column with size
+        try std.testing.expectEqualStrings(create.create_table.columns.items[1].name, "name");
+        try std.testing.expect(create.create_table.columns.items[1].column_type.txt == 100);
+        try std.testing.expect(!create.create_table.columns.items[1].is_primary_key);
+        try std.testing.expect(create.create_table.columns.items[1].is_unique);
+
+        // Check real column
+        try std.testing.expectEqualStrings(create.create_table.columns.items[2].name, "price");
+        try std.testing.expect(create.create_table.columns.items[2].column_type == .real);
+
+        // Check text column without size
+        try std.testing.expectEqualStrings(create.create_table.columns.items[3].name, "description");
+        try std.testing.expect(create.create_table.columns.items[3].column_type.txt == std.math.maxInt(u16));
+
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Table with binary data and various sizes
+    {
+        context.input = "create table files (id int primary key, filename text(255), data binary(1024), thumbnail binary)";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const create = statements[0];
+        try std.testing.expect(create == .create_table);
+        try std.testing.expectEqualStrings(create.create_table.table, "files");
+        try std.testing.expect(create.create_table.columns.items.len == 4);
+
+        // Check binary column with size
+        try std.testing.expectEqualStrings(create.create_table.columns.items[2].name, "data");
+        try std.testing.expect(create.create_table.columns.items[2].column_type.bin == 1024);
+
+        // Check binary column without size
+        try std.testing.expectEqualStrings(create.create_table.columns.items[3].name, "thumbnail");
+        try std.testing.expect(create.create_table.columns.items[3].column_type.bin == std.math.maxInt(u16));
+
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Table with all data types
+    {
+        context.input = "create table test_types (id int, score real, name text, data binary, active bool);";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const create = statements[0];
+        try std.testing.expect(create == .create_table);
+        try std.testing.expect(create.create_table.columns.items.len == 5);
+
+        try std.testing.expect(create.create_table.columns.items[0].column_type == .int);
+        try std.testing.expect(create.create_table.columns.items[1].column_type == .real);
+        try std.testing.expect(create.create_table.columns.items[2].column_type.txt == std.math.maxInt(u16));
+        try std.testing.expect(create.create_table.columns.items[3].column_type.bin == std.math.maxInt(u16));
+        try std.testing.expect(create.create_table.columns.items[4].column_type == .bool);
+
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Table without semicolon (EOF termination)
+    {
+        context.input = "create table simple (id int)";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const create = statements[0];
+        try std.testing.expect(create == .create_table);
+        try std.testing.expectEqualStrings(create.create_table.table, "simple");
+        try std.testing.expect(create.create_table.columns.items.len == 1);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+}
+
+test "parseDropTable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var parser = Self.init(&context);
+
+    // Test: Missing TABLE keyword
+    {
+        context.input = "drop";
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Missing table name
+    {
+        context.input = "drop table";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Invalid token after table name
+    {
+        context.input = "drop table users &";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Multiple table names (not supported)
+    {
+        context.input = "drop table users, products";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Keyword as table name (should fail)
+    {
+        context.input = "drop table select";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Number as table name (should fail)
+    {
+        context.input = "drop table 123";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: String as table name (should fail)
+    {
+        context.input = "drop table 'users'";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Extra tokens after valid statement
+    {
+        context.input = "drop table users cascade";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Valid drop table with semicolon
+    {
+        context.input = "drop table users;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const drop = statements[0];
+        try std.testing.expect(drop == .drop_table);
+        try std.testing.expectEqualStrings(drop.drop_table.table, "users");
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid drop table without semicolon (EOF termination)
+    {
+        context.input = "drop table products";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const drop = statements[0];
+        try std.testing.expect(drop == .drop_table);
+        try std.testing.expectEqualStrings(drop.drop_table.table, "products");
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid drop table with underscore in name
+    {
+        context.input = "drop table user_profiles;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const drop = statements[0];
+        try std.testing.expect(drop == .drop_table);
+        try std.testing.expectEqualStrings(drop.drop_table.table, "user_profiles");
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid drop table with numbers in name
+    {
+        context.input = "drop table table123;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const drop = statements[0];
+        try std.testing.expect(drop == .drop_table);
+        try std.testing.expectEqualStrings(drop.drop_table.table, "table123");
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid drop table with mixed case
+    {
+        context.input = "DROP TABLE MyTable;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const drop = statements[0];
+        try std.testing.expect(drop == .drop_table);
+        try std.testing.expectEqualStrings(drop.drop_table.table, "MyTable");
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Long table name
+    {
+        context.input = "drop table very_long_table_name_with_many_underscores_and_characters;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const drop = statements[0];
+        try std.testing.expect(drop == .drop_table);
+        try std.testing.expectEqualStrings(drop.drop_table.table, "very_long_table_name_with_many_underscores_and_characters");
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Table name starting with underscore
+    {
+        context.input = "drop table _private_table;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const drop = statements[0];
+        try std.testing.expect(drop == .drop_table);
+        try std.testing.expectEqualStrings(drop.drop_table.table, "_private_table");
+        try std.testing.expect(!context.result.is_error_result());
+    }
+}
+
+test "parseDelete" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var parser = Self.init(&context);
+
+    // Test: Missing FROM keyword
+    {
+        context.input = "delete";
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Missing table name
+    {
+        context.input = "delete from";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Invalid token after table name
+    {
+        context.input = "delete from users &";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Incomplete WHERE clause
+    {
+        context.input = "delete from users where";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Invalid WHERE expression
+    {
+        context.input = "delete from users where id =";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Keyword as table name (should fail)
+    {
+        context.input = "delete from select";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Number as table name (should fail)
+    {
+        context.input = "delete from 123";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: String as table name (should fail)
+    {
+        context.input = "delete from 'users'";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Extra tokens after valid statement
+    {
+        context.input = "delete from users cascade";
+        parser.position = 0;
+        context.result = .{ .data = .__void };
+        _ = parser.parse() catch {};
+        try std.testing.expect(context.result.is_error_result());
+    }
+
+    // Test: Valid delete without WHERE clause (with semicolon)
+    {
+        context.input = "delete from users;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "users");
+        try std.testing.expect(delete.delete.where == null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete without WHERE clause (EOF termination)
+    {
+        context.input = "delete from products";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "products");
+        try std.testing.expect(delete.delete.where == null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete with simple WHERE clause
+    {
+        context.input = "delete from users where id = 1;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "users");
+        try std.testing.expect(delete.delete.where != null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete with complex WHERE clause
+    {
+        context.input = "delete from orders where status = 'cancelled' and created_at < '2023-01-01'";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "orders");
+        try std.testing.expect(delete.delete.where != null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete with numeric comparison
+    {
+        context.input = "delete from products where price > 100.50;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "products");
+        try std.testing.expect(delete.delete.where != null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete with boolean WHERE clause
+    {
+        context.input = "delete from users where active = false";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "users");
+        try std.testing.expect(delete.delete.where != null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete with table name containing underscores
+    {
+        context.input = "delete from user_profiles where user_id = 42;";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "user_profiles");
+        try std.testing.expect(delete.delete.where != null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete with OR condition
+    {
+        context.input = "delete from logs where level = 'debug' or level = 'trace'";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "logs");
+        try std.testing.expect(delete.delete.where != null);
+        try std.testing.expect(!context.result.is_error_result());
+    }
+
+    // Test: Valid delete with parenthesized WHERE expression
+    {
+        context.input = "delete from items where (category = 'electronics' and price < 50)";
+        parser.position = 0;
+        parser.statements.clearAndFree();
+        context.result = .{ .data = .__void };
+        const statements = try parser.parse();
+        const delete = statements[0];
+        try std.testing.expect(delete == .delete);
+        try std.testing.expectEqualStrings(delete.delete.from, "items");
+        try std.testing.expect(delete.delete.where != null);
+        try std.testing.expect(!context.result.is_error_result());
     }
 }
 

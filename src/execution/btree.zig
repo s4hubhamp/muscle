@@ -855,7 +855,9 @@ pub const BTree = struct {
                         assert(err == error.Overflow);
                         fill_right = true;
                     };
-                } else {
+                }
+
+                if (fill_right) {
                     if (new_root.num_slots == 0) {
                         left.right_child = cell.left_child;
                         cell.left_child = left_page_number;
@@ -1132,29 +1134,48 @@ pub const BTree = struct {
         const left_page_number = try self.pager.alloc_free_page(self.metadata);
         const right_page_number = try self.pager.alloc_free_page(self.metadata);
 
+        var fill_right = false;
         for (0..root.num_slots) |curr_slot| {
             if (curr_slot == slot_index) {
-                left.append(cell) catch |err| {
-                    assert(err == error.Overflow);
+                if (!fill_right) {
+                    left.append(cell) catch |err| {
+                        assert(err == error.Overflow);
+                        fill_right = true;
+                    };
+                }
+
+                if (fill_right) {
                     try right.append(cell);
-                };
+                }
 
                 if (!is_new_cell) continue;
             }
 
             const curr_cell = root.cell_at_slot(@intCast(curr_slot));
-            left.append(curr_cell) catch |err| {
-                assert(err == error.Overflow);
+            if (!fill_right) {
+                left.append(curr_cell) catch |err| {
+                    assert(err == error.Overflow);
+                    fill_right = true;
+                };
+            }
+
+            if (fill_right) {
                 try right.append(curr_cell);
-            };
+            }
         }
 
         // if the cell is meant to be inserted at last
         if (slot_index == root.num_slots) {
-            left.append(cell) catch |err| {
-                assert(err == error.Overflow);
+            if (!fill_right) {
+                left.append(cell) catch |err| {
+                    assert(err == error.Overflow);
+                    fill_right = true;
+                };
+            }
+
+            if (fill_right) {
                 try right.append(cell);
-            };
+            }
         }
 
         // pivot is the last cell inside the left

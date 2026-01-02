@@ -33,7 +33,16 @@ pub const Column = struct {
     max_int_value: i64 = 0,
 };
 
-pub const DataType = union(enum) { int, real, bool, txt: usize, bin: usize };
+pub const DataType = union(enum) {
+    int,
+    real,
+    bool,
+
+    // default limit will be max value for u16
+    txt: u16,
+    bin: u16,
+};
+
 pub const Value = union(enum) {
     int: i64,
     real: f64,

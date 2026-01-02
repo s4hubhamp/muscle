@@ -4,12 +4,12 @@ const Expression = @import("expression.zig").Expression;
 
 pub const Statement = union(enum) {
     //
-    create: Create,
+    create_table: CreateTable,
     select: Select,
     delete: Delete,
     update: Update,
     insert: Insert,
-    drop: Drop,
+    drop_table: DropTable,
     explain: Explain,
 
     // Transaction
@@ -18,18 +18,16 @@ pub const Statement = union(enum) {
     commit,
 };
 
-const Create = union(enum) {
-    database: []const u8,
-    table: struct {
-        name: []const u8,
-        columns: std.ArrayList(muscle.Column),
-    },
-    index: struct {
-        name: []const u8,
-        table: []const u8,
-        column: []const u8,
-        unique: bool,
-    },
+pub const ColumnDefinition = struct {
+    name: []const u8,
+    column_type: muscle.DataType,
+    is_primary_key: bool,
+    is_unique: bool,
+};
+
+const CreateTable = struct {
+    table: []const u8,
+    columns: std.ArrayList(ColumnDefinition),
 };
 
 const Select = struct {
@@ -51,20 +49,19 @@ const Update = struct {
     where: ?Expression,
 };
 
-const Assignment = struct {
-    identifier: []const u8,
+pub const Assignment = struct {
+    column: []const u8,
     value: Expression,
 };
 
 const Insert = struct {
     into: []const u8,
-    columns: []const []const u8,
+    columns: std.ArrayList([]const u8),
     values: std.ArrayList(Expression),
 };
 
-const Drop = union(enum) {
+const DropTable = union(enum) {
     table: []const u8,
-    database: []const u8,
 };
 
 const Explain = struct {

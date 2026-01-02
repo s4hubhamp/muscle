@@ -923,10 +923,19 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
 
             if (data.min_key) |min_key| {
                 if (!(serde.compare_serialized_bytes(primary_key_data_type, min_key, curr_key) == std.math.Order.lt)) {
+                    const len_a = std.mem.readInt(u16, curr_key[0..@sizeOf(u16)], .little);
+                    const len_b = std.mem.readInt(u16, min_key[0..@sizeOf(u16)], .little);
+
                     if (primary_key_data_type == .bin or primary_key_data_type == .txt) {
-                        std.debug.print("curr_key: {s} \nmin_key: {s}\n\n", .{ curr_key[8..12], min_key[8..12] });
+                        std.debug.print(
+                            "curr_key: {d}#{s} \nmin_key: {d}#{s}\n\n",
+                            .{ len_a, curr_key[@sizeOf(u16)..12], len_b, min_key[@sizeOf(u16)..12] },
+                        );
                     } else {
-                        std.debug.print("curr_key: {d} \nmin_key: {d}\n\n", .{ curr_key, min_key });
+                        std.debug.print(
+                            "curr_key: {d}#{d} \nmin_key: {d}#{d}\n\n",
+                            .{ len_a, curr_key[@sizeOf(u16)..12], len_b, min_key[@sizeOf(u16)..12] },
+                        );
                     }
 
                     assert(false);
@@ -936,10 +945,22 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
             if (data.max_key) |max_key| {
                 if (!(serde.compare_serialized_bytes(primary_key_data_type, curr_key, max_key).compare(.lte))) {
                     if (primary_key_data_type == .bin or primary_key_data_type == .txt) {
-                        std.debug.print("curr_key: {s} \nmax_key: {s}\n\n", .{
-                            curr_key[8..],
-                            max_key[8..],
-                        });
+                        const len_a = std.mem.readInt(u16, curr_key[0..@sizeOf(u16)], .little);
+                        const len_b = std.mem.readInt(u16, max_key[0..@sizeOf(u16)], .little);
+
+                        if (primary_key_data_type == .bin or primary_key_data_type == .txt) {
+                            std.debug.print(
+                                "curr_key: {d}#{s} \nmin_key: {d}#{s}\n\n",
+                                .{ len_a, curr_key[@sizeOf(u16)..12], len_b, max_key[@sizeOf(u16)..12] },
+                            );
+                        } else {
+                            std.debug.print(
+                                "curr_key: {d}#{d} \nmin_key: {d}#{d}\n\n",
+                                .{ len_a, curr_key[@sizeOf(u16)..12], len_b, max_key[@sizeOf(u16)..12] },
+                            );
+                        }
+
+                        assert(false);
                     } else {
                         std.debug.print("curr_key: {d} \nmax_key: {d}\n\n", .{ curr_key, max_key });
                     }

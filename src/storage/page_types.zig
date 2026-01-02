@@ -491,8 +491,8 @@ pub const Cell = struct {
                     key_slice = self.content[0..@sizeOf(i64)];
                 },
                 .bin, .txt => {
-                    const len = std.mem.readInt(usize, self.content[0..@sizeOf(usize)], .little);
-                    key_slice = self.content[0..(@sizeOf(usize) + len)];
+                    const len = std.mem.readInt(u16, self.content[0..@sizeOf(u16)], .little);
+                    key_slice = self.content[0..(@sizeOf(u16) + len)];
                 },
                 .bool => {
                     // we don't support bool as primary key
