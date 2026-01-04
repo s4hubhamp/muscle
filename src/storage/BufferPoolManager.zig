@@ -24,7 +24,7 @@ pub fn init(allocator: std.mem.Allocator) !BufferPoolManager {
 }
 
 pub fn deinit(self: *BufferPoolManager) void {
-    self.cache.deinit();
+    self.cache.deinit(self.allocator);
 }
 
 pub fn is_full(self: *BufferPoolManager) bool {
@@ -74,5 +74,5 @@ pub fn put(self: *BufferPoolManager, page_number: u32, buffer: [PAGE_SIZE]u8, di
     }
 
     // new item
-    try self.cache.append(CacheItem{ .page_number = page_number, .page = buffer });
+    try self.cache.append(self.allocator, CacheItem{ .page_number = page_number, .page = buffer });
 }

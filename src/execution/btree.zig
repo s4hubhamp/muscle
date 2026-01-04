@@ -3,6 +3,7 @@ const muscle = @import("../muscle.zig");
 
 const assert = std.debug.assert;
 const serde = muscle.common.serde;
+const BoundedArray = muscle.common.BoundedArray;
 const PageManager = muscle.storage.PageManager;
 const page_types = muscle.storage.page_types;
 const Page = page_types.Page;
@@ -43,7 +44,7 @@ pub const BTree = struct {
     };
 
     fn search_internal(self: *const BTree, key: []const u8) !std.ArrayList(PathDetail) {
-        var path = std.ArrayList(PathDetail).init(self.arena);
+        var path = std.ArrayList(PathDetail){};
         var page_number = self.root_page_number;
         var node = try self.pager.get_page(Page, page_number);
 
@@ -66,7 +67,7 @@ pub const BTree = struct {
             };
             page_number = path_detail.child;
             node = try self.pager.get_page(Page, page_number);
-            try path.append(path_detail);
+            try path.append(self.arena, path_detail);
         }
 
         return path;
@@ -74,7 +75,7 @@ pub const BTree = struct {
 
     pub fn insert(self: *BTree, key: []const u8, cell_bytes: []const u8) !void {
         var path = try self.search_internal(key);
-        defer path.deinit();
+        defer path.deinit(self.arena);
 
         var target_leaf_page = self.root_page_number;
         var leaf_index_in_parent: ?u16 = null;
@@ -112,7 +113,7 @@ pub const BTree = struct {
 
     pub fn update(self: *BTree, key: []const u8, cell_bytes: []const u8) !void {
         var path = try self.search_internal(key);
-        defer path.deinit();
+        defer path.deinit(self.arena);
 
         var target_leaf_page = self.root_page_number;
         var leaf_index_in_parent: ?u16 = null;
@@ -150,7 +151,7 @@ pub const BTree = struct {
 
     pub fn delete(self: *BTree, key: []const u8) !void {
         var path = try self.search_internal(key);
-        defer path.deinit();
+        defer path.deinit(self.arena);
 
         var target_leaf_page = self.root_page_number;
         var leaf_index_in_parent: ?u16 = null;
@@ -197,7 +198,7 @@ pub const BTree = struct {
             delete_at_slot: Page.SlotArrayIndex,
         },
     };
-    const SiblingUpdateInfo = std.BoundedArray(struct {
+    const SiblingUpdateInfo = BoundedArray(struct {
         sibling_slot_index: Page.SlotArrayIndex,
         // zero indicates we freed sibling page
         sibling_page_number: muscle.PageNumber,
@@ -291,7 +292,7 @@ pub const BTree = struct {
                     target_page.insert(data.cell, data.insert_at_slot) catch {
                         save = false;
 
-                        var siblings = try LoadedSiblings.init(0);
+                        var siblings = LoadedSiblings{};
                         try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
                         // distribute
@@ -303,7 +304,7 @@ pub const BTree = struct {
                     target_page.update(data.cell, data.update_at_slot) catch {
                         save = false;
 
-                        var siblings = try LoadedSiblings.init(0);
+                        var siblings = LoadedSiblings{};
                         try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
                         // distribute
@@ -318,14 +319,12 @@ pub const BTree = struct {
                     // if it does then we will need to free this page and balance the tree
                     if (target_page.num_slots == 0) {
                         next_change_info = TreeChangeInfo{
-                            .sibling_updates = try SiblingUpdateInfo.init(0),
+                            .sibling_updates = SiblingUpdateInfo{},
                         };
-                        try next_change_info.?.sibling_updates.append(
-                            .{
-                                .sibling_page_number = 0,
-                                .sibling_slot_index = target_page_slot_inside_parent.?,
-                            },
-                        );
+                        next_change_info.?.sibling_updates.push(.{
+                            .sibling_page_number = 0,
+                            .sibling_slot_index = target_page_slot_inside_parent.?,
+                        });
                         try self.free_page(target_page_number);
                         save = false;
                     }
@@ -342,7 +341,7 @@ pub const BTree = struct {
             );
 
             if (space_needed == 0 or space_needed > Page.CONTENT_MAX_SIZE) {
-                var siblings = try LoadedSiblings.init(0);
+                var siblings = LoadedSiblings{};
                 try self.load_siblings(parent_page_number.?, target_page_slot_inside_parent.?, &siblings);
 
                 next_change_info = try self.modify_internal_node(
@@ -390,7 +389,7 @@ pub const BTree = struct {
     }
 
     const MAX_LOADED_SIBLINGS = 3;
-    const LoadedSiblings = std.BoundedArray(struct { page_number: muscle.PageNumber, page: Page, slot_index: Page.SlotArrayIndex }, MAX_LOADED_SIBLINGS);
+    const LoadedSiblings = BoundedArray(struct { page_number: muscle.PageNumber, page: Page, slot_index: Page.SlotArrayIndex }, MAX_LOADED_SIBLINGS);
     // @Perf we can just use left and right pointers instead of using parent
     fn load_siblings(
         self: *BTree,
@@ -407,7 +406,11 @@ pub const BTree = struct {
             if (index > parent.num_slots) break;
 
             const page_number = parent.child_at_slot(@intCast(index));
-            try siblings.append(.{ .page_number = page_number, .page = try self.pager.get_page(Page, page_number), .slot_index = @intCast(index) });
+            siblings.push(.{
+                .page_number = page_number,
+                .page = try self.pager.get_page(Page, page_number),
+                .slot_index = @intCast(index),
+            });
         }
     }
 
@@ -480,7 +483,7 @@ pub const BTree = struct {
         node: *Page,
         change_info: *const TreeChangeInfo,
     ) !void {
-        for (change_info.sibling_updates.constSlice()) |info| {
+        for (change_info.sibling_updates.const_slice()) |info| {
             if (info.sibling_page_number == 0) {
                 // we have freed child attached to this node
                 // we should also let go of this divider key
@@ -558,7 +561,7 @@ pub const BTree = struct {
             space_needed += last_increment;
         }
 
-        for (change_info.sibling_updates.constSlice()) |info| {
+        for (change_info.sibling_updates.const_slice()) |info| {
             // for right child we don't need space
             // but if the page was previously freed then previous cell will give new right child and hence
             // we need to subtract space
@@ -606,7 +609,7 @@ pub const BTree = struct {
         cell_page_number: muscle.PageNumber,
         cell_slot_index: Page.SlotArrayIndex,
     ) !TreeChangeInfo {
-        var raw_cells = std.ArrayList([]u8).init(self.arena);
+        var raw_cells = std.ArrayList([]u8){};
         //defer {
         //    for (raw_cells.items) |slice| {
         //        self.arena.free(slice);
@@ -624,20 +627,20 @@ pub const BTree = struct {
                     if (is_new_cell) {
                         bytes_slice = try self.arena.alloc(u8, cell.size);
                         cell.serialize(bytes_slice);
-                        try raw_cells.append(bytes_slice);
+                        try raw_cells.append(self.arena, bytes_slice);
 
                         // add existing cell
                         bytes_slice = try self.arena.dupe(u8, s.page.raw_cell_slice_at_slot(@intCast(slot)));
-                        try raw_cells.append(bytes_slice);
+                        try raw_cells.append(self.arena, bytes_slice);
                     } else {
                         // skip adding existing cell and only add new cell
                         bytes_slice = try self.arena.alloc(u8, cell.size);
                         cell.serialize(bytes_slice);
-                        try raw_cells.append(bytes_slice);
+                        try raw_cells.append(self.arena, bytes_slice);
                     }
                 } else {
                     bytes_slice = try self.arena.dupe(u8, s.page.raw_cell_slice_at_slot(@intCast(slot)));
-                    try raw_cells.append(bytes_slice);
+                    try raw_cells.append(self.arena, bytes_slice);
                 }
             }
 
@@ -645,7 +648,7 @@ pub const BTree = struct {
             if (s.page_number == cell_page_number and cell_slot_index == s.page.num_slots) {
                 const bytes_slice = try self.arena.alloc(u8, cell.size);
                 cell.serialize(bytes_slice);
-                try raw_cells.append(bytes_slice);
+                try raw_cells.append(self.arena, bytes_slice);
             }
 
             // reset sibling
@@ -653,7 +656,7 @@ pub const BTree = struct {
         }
 
         var change_info = TreeChangeInfo{
-            .sibling_updates = try SiblingUpdateInfo.init(0),
+            .sibling_updates = SiblingUpdateInfo{},
         };
 
         // distribute
@@ -665,7 +668,7 @@ pub const BTree = struct {
             if (curr == raw_cells.items.len) {
                 try self.free_page(sib.page_number);
                 // mark siblings as free
-                try change_info.sibling_updates.append(.{
+                change_info.sibling_updates.push(.{
                     .sibling_slot_index = sib.slot_index,
                     .sibling_page_number = 0,
                 });
@@ -683,7 +686,7 @@ pub const BTree = struct {
                 };
 
                 if (failed) {
-                    try change_info.sibling_updates.append(.{
+                    change_info.sibling_updates.push(.{
                         .sibling_slot_index = sib.slot_index,
                         .sibling_page_number = sib.page_number,
                     });
@@ -771,13 +774,13 @@ pub const BTree = struct {
             var bytes_slice: []u8 = undefined;
 
             bytes_slice = try self.arena.dupe(u8, root.raw_cell_slice_at_slot(@intCast(slot)));
-            try raw_cells.append(bytes_slice);
+            try raw_cells.append(self.arena, bytes_slice);
         }
 
         var skip_new_page_cell = false;
 
         // siblings are updated so get the updated last cells
-        for (change_info.sibling_updates.constSlice()) |sibling_info| {
+        for (change_info.sibling_updates.const_slice()) |sibling_info| {
             // handle the last sibling
             if (sibling_info.sibling_slot_index == root.num_slots) {
                 // last sibling is right_child so it doesn't need a cell
@@ -800,7 +803,7 @@ pub const BTree = struct {
             );
             bytes_slice = try self.arena.alloc(u8, cell.size);
             cell.serialize(bytes_slice);
-            try raw_cells.append(bytes_slice);
+            try raw_cells.append(self.arena, bytes_slice);
         }
 
         // if new page is added need to add cell
@@ -813,7 +816,7 @@ pub const BTree = struct {
                 cell = Cell.init(try self.get_divider_key(&new_page), new_page_number);
                 const bytes_slice = try self.arena.alloc(u8, cell.size);
                 cell.serialize(bytes_slice);
-                try raw_cells.append(bytes_slice);
+                try raw_cells.append(self.arena, bytes_slice);
             }
         }
 
@@ -824,7 +827,7 @@ pub const BTree = struct {
                 var bytes_slice: []u8 = undefined;
 
                 bytes_slice = try self.arena.dupe(u8, root.raw_cell_slice_at_slot(@intCast(slot)));
-                try raw_cells.append(bytes_slice);
+                try raw_cells.append(self.arena, bytes_slice);
             }
         }
 
@@ -891,9 +894,9 @@ pub const BTree = struct {
         change_info: *const TreeChangeInfo,
     ) !TreeChangeInfo {
         var next_change_info = TreeChangeInfo{
-            .sibling_updates = try SiblingUpdateInfo.init(0),
+            .sibling_updates = SiblingUpdateInfo{},
         };
-        var raw_cells = std.ArrayList([]u8).init(self.arena);
+        var raw_cells = std.ArrayList([]u8){};
         //defer {
         //    for (raw_cells.items) |slice| {
         //        self.arena.free(slice);
@@ -916,11 +919,11 @@ pub const BTree = struct {
                 // collect cells before update
                 for (0..first_updated_slot_index) |slot_index| {
                     bytes_slice = try self.arena.dupe(u8, sibling.raw_cell_slice_at_slot(@intCast(slot_index)));
-                    try raw_cells.append(bytes_slice);
+                    try raw_cells.append(self.arena, bytes_slice);
                 }
 
                 // collect latest with change info
-                for (change_info.sibling_updates.constSlice()) |info| {
+                for (change_info.sibling_updates.const_slice()) |info| {
                     // collect latest info for pages which we didn't free
                     if (info.sibling_page_number == 0) {
                         // when we first encounter free page we know for sure that pages
@@ -935,7 +938,7 @@ pub const BTree = struct {
                     );
                     bytes_slice = try self.arena.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
-                    try raw_cells.append(bytes_slice);
+                    try raw_cells.append(self.arena, bytes_slice);
                 }
 
                 // new ones should be added before adding remaining
@@ -944,7 +947,7 @@ pub const BTree = struct {
                     const cell = Cell.init(try self.get_divider_key(&new_page), new_page_number);
                     bytes_slice = try self.arena.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
-                    try raw_cells.append(bytes_slice);
+                    try raw_cells.append(self.arena, bytes_slice);
                 }
 
                 // collect remaining slots
@@ -959,20 +962,20 @@ pub const BTree = struct {
                             );
                             bytes_slice = try self.arena.alloc(u8, cell.size);
                             cell.serialize(bytes_slice);
-                            try raw_cells.append(bytes_slice);
+                            try raw_cells.append(self.arena, bytes_slice);
                         } else {
                             bytes_slice = try self.arena.dupe(
                                 u8,
                                 sibling.raw_cell_slice_at_slot(@intCast(slot_index)),
                             );
-                            try raw_cells.append(bytes_slice);
+                            try raw_cells.append(self.arena, bytes_slice);
                         }
                     }
                 }
             } else {
                 for (0..sibling.num_slots) |slot| {
                     bytes_slice = try self.arena.dupe(u8, sibling.raw_cell_slice_at_slot(@intCast(slot)));
-                    try raw_cells.append(bytes_slice);
+                    try raw_cells.append(self.arena, bytes_slice);
                 }
 
                 {
@@ -984,7 +987,7 @@ pub const BTree = struct {
                     );
                     bytes_slice = try self.arena.alloc(u8, cell.size);
                     cell.serialize(bytes_slice);
-                    try raw_cells.append(bytes_slice);
+                    try raw_cells.append(self.arena, bytes_slice);
                 }
             }
 
@@ -1005,7 +1008,7 @@ pub const BTree = struct {
             if (curr == raw_cells.items.len) {
                 try self.free_page(sib.page_number);
                 // mark siblings as free
-                try next_change_info.sibling_updates.append(.{
+                next_change_info.sibling_updates.push(.{
                     .sibling_slot_index = sib.slot_index,
                     .sibling_page_number = 0,
                 });
@@ -1049,7 +1052,7 @@ pub const BTree = struct {
                     const cell = Cell.from_bytes(raw_cells.items[curr]);
                     sib.page.right_child = cell.left_child;
 
-                    try next_change_info.sibling_updates.append(.{
+                    next_change_info.sibling_updates.push(.{
                         .sibling_slot_index = sib.slot_index,
                         .sibling_page_number = sib.page_number,
                     });

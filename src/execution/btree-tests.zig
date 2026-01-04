@@ -453,8 +453,8 @@ test "stress test randomized inserts on 1000 entries" {
         .select_table_info = .{ .table_name = table_name },
     };
 
-    var inserted_keys = std.ArrayList([2023]u8).init(allocator);
-    defer inserted_keys.deinit();
+    var inserted_keys = std.ArrayList([2023]u8){};
+    defer inserted_keys.deinit(allocator);
 
     var successful_inserts: usize = 0;
     var total_attempts: usize = 0;
@@ -485,7 +485,7 @@ test "stress test randomized inserts on 1000 entries" {
         } else {
             // This should be a successful insert
             assert(!insert_response.is_error_result());
-            try inserted_keys.append(key);
+            try inserted_keys.append(allocator, key);
             successful_inserts += 1;
 
             // Validate every 100 successful insertions
@@ -602,8 +602,8 @@ test "stress test randomized operations on larger dataset" {
         .select_table_info = .{ .table_name = table_name },
     };
 
-    var inserted_keys = std.ArrayList([2023]u8).init(allocator);
-    defer inserted_keys.deinit();
+    var inserted_keys = std.ArrayList([2023]u8){};
+    defer inserted_keys.deinit(allocator);
 
     var text_buffer: [500]u8 = undefined;
 
@@ -641,7 +641,7 @@ test "stress test randomized operations on larger dataset" {
             assert(insert_response.is_error_result());
             assert(insert_response.err.code == error.DuplicateKey);
         } else {
-            try inserted_keys.append(key);
+            try inserted_keys.append(allocator, key);
 
             // Validate every 100 insertions
             if (i % 100 == 0) {
@@ -776,7 +776,7 @@ test "stress test randomized operations on larger dataset" {
                 assert(insert_response.is_error_result());
                 assert(insert_response.err.code == error.DuplicateKey);
             } else {
-                try inserted_keys.append(key);
+                try inserted_keys.append(allocator, key);
             }
         }
 
@@ -814,7 +814,7 @@ test "stress test randomized operations on larger dataset" {
         ), arena.allocator());
 
         if (!insert_response.is_error_result()) {
-            try inserted_keys.append(key);
+            try inserted_keys.append(allocator, key);
         }
 
         // Validate every 50 insertions
@@ -843,14 +843,16 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
     const t = std.time.milliTimestamp();
 
     var allocator = metadata.pages.allocator;
-    const NodeData = struct {
-        min_key: ?[]const u8,
-        max_key: ?[]const u8,
-        page: muscle.PageNumber,
+    const L = struct {
+        data: struct {
+            min_key: ?[]const u8,
+            max_key: ?[]const u8,
+            page: muscle.PageNumber,
+        },
+        node: std.DoublyLinkedList.Node,
     };
 
-    const L = std.DoublyLinkedList(NodeData);
-    var queue = L{};
+    var queue = std.DoublyLinkedList{};
     const primary_key_data_type = metadata.table_columns.items[0].data_type;
 
     // if root is empty then it should be a leaf node
@@ -860,20 +862,21 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
             assert(page.right_child == 0);
             assert(metadata.pages.count() == 1);
         } else {
-            var node = try allocator.create(L.Node);
-            node.data = .{
+            var l = try allocator.create(L);
+            l.data = .{
                 .min_key = null,
                 .max_key = null,
                 .page = page.page,
             };
-            queue.append(node);
+            queue.append(&l.node);
         }
     } else unreachable;
 
     while (queue.popFirst()) |node| {
-        defer allocator.destroy(node);
+        const l: *L = @fieldParentPtr("node", node);
+        defer allocator.destroy(l);
 
-        const data = node.data;
+        const data = l.data;
         const page_meta = metadata.pages.getPtr(data.page).?;
         const is_leaf = page_meta.right_child == 0;
 
@@ -897,11 +900,11 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
         assert(page_meta.cells.items.len > 0);
 
         // need to check that all childrens are unique
-        var child_pages = std.ArrayList(muscle.PageNumber).init(allocator);
-        defer child_pages.deinit();
+        var child_pages = std.ArrayList(muscle.PageNumber){};
+        defer child_pages.deinit(allocator);
 
         // append right child to child_pages
-        if (!is_leaf) try child_pages.append(page_meta.right_child);
+        if (!is_leaf) try child_pages.append(allocator, page_meta.right_child);
 
         for (page_meta.cells.items, 0..) |cell, slot| {
             const curr_key = cell.key;
@@ -909,7 +912,7 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
             // check that all child pages and unique
             if (!is_leaf) {
                 for (child_pages.items) |n| assert(n != cell.left_child);
-                try child_pages.append(cell.left_child);
+                try child_pages.append(allocator, cell.left_child);
             }
 
             // assert that keys are in order
@@ -933,7 +936,7 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
                         );
                     } else {
                         std.debug.print(
-                            "curr_key: {d}#{d} \nmin_key: {d}#{d}\n\n",
+                            "curr_key: {d}#{s} \nmin_key: {d}#{s}\n\n",
                             .{ len_a, curr_key[@sizeOf(u16)..12], len_b, min_key[@sizeOf(u16)..12] },
                         );
                     }
@@ -955,14 +958,14 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
                             );
                         } else {
                             std.debug.print(
-                                "curr_key: {d}#{d} \nmin_key: {d}#{d}\n\n",
+                                "curr_key: {d}#{s} \nmin_key: {d}#{s}\n\n",
                                 .{ len_a, curr_key[@sizeOf(u16)..12], len_b, max_key[@sizeOf(u16)..12] },
                             );
                         }
 
                         assert(false);
                     } else {
-                        std.debug.print("curr_key: {d} \nmax_key: {d}\n\n", .{ curr_key, max_key });
+                        std.debug.print("curr_key: {s} \nmax_key: {s}\n\n", .{ curr_key, max_key });
                     }
 
                     assert(false);
@@ -989,13 +992,13 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
                 const next_max_key = pivot_cell.key;
 
                 // append child to queue
-                const child_node = try allocator.create(L.Node);
-                child_node.data = .{
+                const next = try allocator.create(L);
+                next.data = .{
                     .min_key = next_min_key,
                     .max_key = next_max_key,
                     .page = cell.left_child,
                 };
-                queue.append(child_node);
+                queue.append(&next.node);
             } else {
                 // for leaf nodes left_child should be zero
                 assert(cell.left_child == 0);
@@ -1018,13 +1021,13 @@ fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
             const min_key = page_meta.cells.items[page_meta.cells.items.len - 1].key;
             const max_key = data.max_key;
 
-            const child_node = try allocator.create(L.Node);
-            child_node.data = .{
+            const next = try allocator.create(L);
+            next.data = .{
                 .min_key = min_key,
                 .max_key = max_key,
                 .page = page_meta.right_child,
             };
-            queue.append(child_node);
+            queue.append(&next.node);
         }
     }
 

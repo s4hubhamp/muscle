@@ -17,7 +17,7 @@ const Journal = @This();
 
 io: IO,
 // unsaved entries
-entries: std.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES),
+entries: muscle.common.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES),
 // this metadata does not contain newer stuff from entries. This is just an already saved stuff
 metadata: JournalMetadataPage,
 
@@ -72,7 +72,7 @@ pub fn init(database_file_path: []const u8) !Journal {
 
     return Journal{
         .io = io,
-        .entries = try std.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES).init(0),
+        .entries = muscle.common.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES){},
         .metadata = metadata,
     };
 }
@@ -137,7 +137,7 @@ pub fn record(self: *Journal, page_number: u32, entry: [muscle.PAGE_SIZE]u8) !vo
     }
 
     // check if it exists inside entries
-    for (self.entries.constSlice()) |*e| {
+    for (self.entries.const_slice()) |*e| {
         if (e.page_number == page_number) {
             return;
         }
@@ -148,7 +148,7 @@ pub fn record(self: *Journal, page_number: u32, entry: [muscle.PAGE_SIZE]u8) !vo
         try self.persist();
     }
 
-    try self.entries.append(JournalEntry{ .page_number = page_number, .entry = entry });
+    self.entries.push(JournalEntry{ .page_number = page_number, .entry = entry });
 }
 
 // Save all the original unsaved pages to the journal file.
@@ -160,7 +160,7 @@ pub fn persist(self: *Journal) !void {
     var metadata = &self.metadata;
 
     // write unsaved pages
-    for (self.entries.constSlice()) |*entry| {
+    for (self.entries.const_slice()) |*entry| {
         const page_number = metadata.n_pages + 1;
         _ = try self.io.write(page_number, &entry.entry);
         metadata.pages[metadata.n_pages] = entry.page_number;

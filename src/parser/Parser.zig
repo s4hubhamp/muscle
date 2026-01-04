@@ -19,7 +19,7 @@ position: usize,
 pub fn init(context: *muscle.QueryContext) Self {
     return Self{
         .context = context,
-        .statements = std.ArrayList(Statement).init(context.arena),
+        .statements = std.ArrayList(Statement){},
         .position = 0,
     };
 }
@@ -30,7 +30,7 @@ pub fn parse(self: *Self) ![]Statement {
         if (self.is_at_end()) break;
 
         const stmt = try self.parse_statement();
-        try self.statements.append(stmt);
+        try self.statements.append(self.context.arena, stmt);
     }
 
     return self.statements.items;
@@ -136,7 +136,7 @@ fn peek(self: *const Self) u8 {
 
 fn parse_select(self: *Self) !Statement {
     const columns = try self.parse_select_list();
-    var order_by = std.ArrayList(Expression).init(self.context.arena);
+    var order_by = std.ArrayList(Expression){};
     var where_clause: ?Expression = null;
     var limit: usize = 0;
 
@@ -177,7 +177,7 @@ fn parse_select(self: *Self) !Statement {
 }
 
 fn parse_select_list(self: *Self) !std.ArrayList(Expression) {
-    var columns = std.ArrayList(Expression).init(self.context.arena);
+    var columns = std.ArrayList(Expression){};
 
     var star_is_found = false;
     var expr = try self.parse_expression();
@@ -191,7 +191,7 @@ fn parse_select_list(self: *Self) !std.ArrayList(Expression) {
             else => {},
         }
 
-        try columns.append(expr);
+        try columns.append(self.context.arena, expr);
         self.skip_whitespace_and_comments();
         if (try self.peek_token() == .comma) {
             self.advance();
@@ -243,12 +243,12 @@ fn parse_comma_separated_expressions_with_parantheses(self: *Self) !std.ArrayLis
 fn parse_comma_separated_identifiers(self: *Self) !std.ArrayList([]const u8) {
     try self.expect_token(.left_paren);
 
-    var values = std.ArrayList([]const u8).init(self.context.arena);
+    var values = std.ArrayList([]const u8){};
     var seen = std.StringHashMap(void).init(self.context.arena);
     defer seen.deinit();
 
     const first = try self.expect_identifier("Expected identifier");
-    try values.append(first);
+    try values.append(self.context.arena, first);
     try seen.put(first, {});
 
     while (try self.consume_optional_token(.comma)) {
@@ -258,7 +258,7 @@ fn parse_comma_separated_identifiers(self: *Self) !std.ArrayList([]const u8) {
             return self.set_err("Duplicate identifier name '{s}' in list", .{val});
         }
 
-        try values.append(val);
+        try values.append(self.context.arena, val);
         try seen.put(val, {});
     }
 
@@ -277,10 +277,10 @@ fn parse_comma_separated(
         try self.expect_token(.left_paren);
     }
 
-    var results = std.ArrayList(Expression).init(self.context.arena);
-    try results.append(try subparser(self));
+    var results = std.ArrayList(Expression){};
+    try results.append(self.context.arena, try subparser(self));
     while (try self.consume_optional_token(.comma)) {
-        try results.append(try subparser(self));
+        try results.append(self.context.arena, try subparser(self));
     }
 
     if (required_parenthesis) {
@@ -784,8 +784,8 @@ fn is_part_of_ident_or_keyword(chr: u8) bool {
 fn parse_insert(self: *Self) !Statement {
     try self.expect_keyword(.into);
     const into = try self.expect_identifier("Expected identifier for table name");
-    var columns = std.ArrayList([]const u8).init(self.context.arena);
-    var values = std.ArrayList(Expression).init(self.context.arena);
+    var columns = std.ArrayList([]const u8){};
+    var values = std.ArrayList(Expression){};
 
     if (try self.peek_token() == .left_paren) {
         columns = try self.parse_comma_separated_identifiers();
@@ -823,7 +823,7 @@ fn parse_update(self: *Self) !Statement {
 
     try self.expect_keyword(.set);
 
-    var assignments = std.ArrayList(Assignment).init(self.context.arena);
+    var assignments = std.ArrayList(Assignment){};
     var seen_columns = std.StringHashMap(void).init(self.context.arena);
 
     // Parse first assignment
@@ -831,7 +831,7 @@ fn parse_update(self: *Self) !Statement {
     try self.expect_token(.eq);
     const first_value = try self.parse_expression();
 
-    try assignments.append(.{ .column = first_column, .value = first_value });
+    try assignments.append(self.context.arena, .{ .column = first_column, .value = first_value });
     try seen_columns.put(first_column, {});
 
     // Parse additional assignments
@@ -846,7 +846,7 @@ fn parse_update(self: *Self) !Statement {
         try self.expect_token(.eq);
         const value = try self.parse_expression();
 
-        try assignments.append(.{ .column = column, .value = value });
+        try assignments.append(self.context.arena, .{ .column = column, .value = value });
         try seen_columns.put(column, {});
     }
 
@@ -877,16 +877,16 @@ fn parse_create_table(self: *Self) !Statement {
 
     try self.expect_token(.left_paren);
 
-    var columns = std.ArrayList(statement.ColumnDefinition).init(self.context.arena);
+    var columns = std.ArrayList(statement.ColumnDefinition){};
     var seen_columns = std.StringHashMap(void).init(self.context.arena);
     var primary_key_count: u32 = 0;
 
     const first_column = try self.parse_column_definition(&seen_columns, &primary_key_count);
-    try columns.append(first_column);
+    try columns.append(self.context.arena, first_column);
 
     while (try self.consume_optional_token(.comma)) {
         const column = try self.parse_column_definition(&seen_columns, &primary_key_count);
-        try columns.append(column);
+        try columns.append(self.context.arena, column);
     }
 
     try self.expect_token(.right_paren);
@@ -1376,7 +1376,7 @@ test "parseUpdate" {
     {
         context.input = "update products set price = 99.99, stock = 50 where id = 1";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const update = statements[0];
@@ -1543,7 +1543,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id int, name text, active bool);";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const create = statements[0];
@@ -1572,7 +1572,7 @@ test "parseCreateTable" {
     {
         context.input = "create table products (id int primary key, name text(100) unique, price real, description text)";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const create = statements[0];
@@ -1607,7 +1607,7 @@ test "parseCreateTable" {
     {
         context.input = "create table files (id int primary key, filename text(255), data binary(1024), thumbnail binary)";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const create = statements[0];
@@ -1630,7 +1630,7 @@ test "parseCreateTable" {
     {
         context.input = "create table test_types (id int, score real, name text, data binary, active bool);";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const create = statements[0];
@@ -1650,7 +1650,7 @@ test "parseCreateTable" {
     {
         context.input = "create table simple (id int)";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const create = statements[0];
@@ -1742,7 +1742,7 @@ test "parseDropTable" {
     {
         context.input = "drop table users;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const drop = statements[0];
@@ -1755,7 +1755,7 @@ test "parseDropTable" {
     {
         context.input = "drop table products";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const drop = statements[0];
@@ -1768,7 +1768,7 @@ test "parseDropTable" {
     {
         context.input = "drop table user_profiles;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const drop = statements[0];
@@ -1781,7 +1781,7 @@ test "parseDropTable" {
     {
         context.input = "drop table table123;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const drop = statements[0];
@@ -1794,7 +1794,7 @@ test "parseDropTable" {
     {
         context.input = "DROP TABLE MyTable;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const drop = statements[0];
@@ -1807,7 +1807,7 @@ test "parseDropTable" {
     {
         context.input = "drop table very_long_table_name_with_many_underscores_and_characters;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const drop = statements[0];
@@ -1820,7 +1820,7 @@ test "parseDropTable" {
     {
         context.input = "drop table _private_table;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const drop = statements[0];
@@ -1920,7 +1920,7 @@ test "parseDelete" {
     {
         context.input = "delete from users;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -1934,7 +1934,7 @@ test "parseDelete" {
     {
         context.input = "delete from products";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -1948,7 +1948,7 @@ test "parseDelete" {
     {
         context.input = "delete from users where id = 1;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -1962,7 +1962,7 @@ test "parseDelete" {
     {
         context.input = "delete from orders where status = 'cancelled' and created_at < '2023-01-01'";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -1976,7 +1976,7 @@ test "parseDelete" {
     {
         context.input = "delete from products where price > 100.50;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -1990,7 +1990,7 @@ test "parseDelete" {
     {
         context.input = "delete from users where active = false";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -2004,7 +2004,7 @@ test "parseDelete" {
     {
         context.input = "delete from user_profiles where user_id = 42;";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -2018,7 +2018,7 @@ test "parseDelete" {
     {
         context.input = "delete from logs where level = 'debug' or level = 'trace'";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];
@@ -2032,7 +2032,7 @@ test "parseDelete" {
     {
         context.input = "delete from items where (category = 'electronics' and price < 50)";
         parser.position = 0;
-        parser.statements.clearAndFree();
+        parser.statements.clearAndFree(arena.allocator());
         context.result = .{ .data = .__void };
         const statements = try parser.parse();
         const delete = statements[0];

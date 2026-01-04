@@ -70,7 +70,7 @@ pub const SelectDatabaseMetadataResult = struct {
     n_total_pages: u32,
     n_free_pages: u32,
     first_free_page: u32,
-    free_pages: std.BoundedArray(muscle.PageNumber, 128),
+    free_pages: muscle.common.BoundedArray(muscle.PageNumber, 128),
 };
 
 pub const SelectResult = struct {

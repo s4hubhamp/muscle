@@ -10,6 +10,7 @@ const errors = muscle.common.errors;
 const page_types = muscle.storage.page_types;
 const PageManager = muscle.storage.PageManager;
 const serde = muscle.common.serde;
+const BoundedArray = muscle.common.BoundedArray;
 
 // @Todo should this be temporary?
 pub const SelectTableMetadataResult = query_result.SelectTableMetadataResult;
@@ -162,7 +163,7 @@ pub const Muscle = struct {
             }
         }
 
-        try tables_list.appendSlice(tables);
+        try tables_list.appendSlice(query_context.arena, tables);
 
         // check for duplicate column names
         for (payload.columns[0 .. payload.columns.len - 1], 0..) |*col, i| {
@@ -203,10 +204,10 @@ pub const Muscle = struct {
                 }
 
                 // primary key column gets stored at beginning
-                try columns.insert(0, column);
+                try columns.insert(query_context.arena, 0, column);
             } else {
                 // @Perf Can we reorder columns for efficient operations?
-                try columns.append(column);
+                try columns.append(query_context.arena, column);
             }
         }
 
@@ -214,7 +215,7 @@ pub const Muscle = struct {
         if (payload.primary_key_column_index == null) {
             const DEFAULT_PRIMARY_KEY_COLUMN_NAME = "Row_Id";
             const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .int;
-            try columns.insert(0, muscle.Column{
+            try columns.insert(query_context.arena, 0, muscle.Column{
                 .name = DEFAULT_PRIMARY_KEY_COLUMN_NAME,
                 .data_type = DEFAULT_PRIMARY_KEY_COLUMN_TYPE,
                 .auto_increment = true,
@@ -237,7 +238,7 @@ pub const Muscle = struct {
         };
 
         // append a new table entry
-        try tables_list.append(table);
+        try tables_list.append(query_context.arena, table);
 
         // update tables
         try metadata.set_tables(query_context.arena, tables_list.items[0..]);
@@ -318,7 +319,7 @@ pub const Muscle = struct {
         // If the passed payload size is greater than max content that a single page can hold
         // this will overflow.
         // so the max size of a single row for now is equal to `page_types.Page.CONTENT_MAX_SIZE`
-        var buffer = try std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE).init(0);
+        var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
         var primary_key_bytes: []const u8 = undefined;
         var primary_key_type: muscle.DataType = undefined;
 
@@ -376,13 +377,11 @@ pub const Muscle = struct {
                 }
             }
 
-            serde.serailize_value(&buffer, final_value_to_serialize) catch {
-                return error.RowTooBig;
-            };
+            try serde.serailize_value(&buffer, final_value_to_serialize);
 
             // first column is always the primary key
             if (i == 0) {
-                primary_key_bytes = buffer.constSlice();
+                primary_key_bytes = buffer.const_slice();
                 primary_key_type = column.data_type;
                 if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
                     return error.KeyTooLong;
@@ -399,7 +398,7 @@ pub const Muscle = struct {
             context.arena,
         );
 
-        try btree.insert(primary_key_bytes, buffer.constSlice());
+        try btree.insert(primary_key_bytes, buffer.const_slice());
 
         // update metadata
         try metadata_page.set_tables(context.arena, tables);
@@ -467,7 +466,7 @@ pub const Muscle = struct {
         // If the passed payload size is greater than max content that a single page can hold
         // this will overflow.
         // so the max size of a single row for now is equal to `page_types.Page.CONTENT_MAX_SIZE`
-        var buffer = try std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE).init(0);
+        var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
         var primary_key_bytes: []const u8 = undefined;
         var primary_key_type: muscle.DataType = undefined;
 
@@ -525,13 +524,11 @@ pub const Muscle = struct {
                 }
             }
 
-            serde.serailize_value(&buffer, final_value_to_serialize) catch {
-                return error.RowTooBig;
-            };
+            try serde.serailize_value(&buffer, final_value_to_serialize);
 
             // first column is always the primary key
             if (i == 0) {
-                primary_key_bytes = buffer.constSlice();
+                primary_key_bytes = buffer.const_slice();
                 primary_key_type = column.data_type;
                 if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
                     return error.KeyTooLong;
@@ -548,7 +545,7 @@ pub const Muscle = struct {
             context.arena,
         );
 
-        try btree.update(primary_key_bytes, buffer.constSlice());
+        try btree.update(primary_key_bytes, buffer.const_slice());
 
         // update metadata
         try metadata_page.set_tables(context.arena, tables);
@@ -580,7 +577,7 @@ pub const Muscle = struct {
         }
 
         // primary key has size limit
-        var buffer = try std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE).init(0);
+        var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
         try serde.serailize_value(&buffer, payload.key);
 
         // Important to initiate BTree everytime OR have correct reference to metadata_page every time
@@ -592,7 +589,7 @@ pub const Muscle = struct {
             context.arena,
         );
 
-        try btree.delete(buffer.constSlice());
+        try btree.delete(buffer.const_slice());
 
         // update metadata
         try self.pager.update_page(0, metadata_page);
@@ -628,7 +625,7 @@ pub const Muscle = struct {
         };
 
         if (payload.columns.len == 0) {
-            try result_columns.appendSlice(table.?.columns);
+            try result_columns.appendSlice(context.arena, table.?.columns);
         } else {
             const find_column = struct {
                 fn f(
@@ -646,7 +643,7 @@ pub const Muscle = struct {
             // validate selected columns and copy inside the results_columns
             for (payload.columns) |col| {
                 if (find_column(table.?.columns, col)) |i| {
-                    try result_columns.append(table.?.columns[i]);
+                    try result_columns.append(context.arena, table.?.columns[i]);
                 } else {
                     return error.ColumnNotFound;
                 }
@@ -680,7 +677,7 @@ pub const Muscle = struct {
 
             for (0..curr_page.num_slots) |slot_index| {
                 const cell = curr_page.cell_at_slot(@intCast(slot_index));
-                var row_bytes = std.ArrayList(u8).init(context.arena);
+                var row_bytes = std.ArrayList(u8){};
 
                 print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page_types.Page.SlotArrayEntry) });
                 serial += 1;
@@ -700,7 +697,7 @@ pub const Muscle = struct {
                                 }
                             }
 
-                            try row_bytes.appendSlice(cell.content[offset..(offset + len)]);
+                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + len)]);
                             offset += len;
                         },
                         .int => {
@@ -709,7 +706,7 @@ pub const Muscle = struct {
                                 std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little),
                             });
 
-                            try row_bytes.appendSlice(cell.content[offset..(offset + @sizeOf(i64))]);
+                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + @sizeOf(i64))]);
                             offset += @sizeOf(i64);
                         },
                         .real => {
@@ -718,7 +715,7 @@ pub const Muscle = struct {
                                 @as(f64, @bitCast(std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little))),
                             });
 
-                            try row_bytes.appendSlice(cell.content[offset..(offset + @sizeOf(i64))]);
+                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + @sizeOf(i64))]);
                             offset += @sizeOf(i64);
                         },
                         .bool => {
@@ -727,14 +724,14 @@ pub const Muscle = struct {
                                 .{ column.name, if (cell.content[offset] == 1) true else false },
                             );
 
-                            try row_bytes.appendSlice(cell.content[offset..(offset + 1)]);
+                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + 1)]);
                             offset += 1;
                         },
                     }
                 }
 
-                row_bytes.shrinkAndFree(row_bytes.items.len);
-                try result.rows.append(row_bytes);
+                row_bytes.shrinkAndFree(context.arena, row_bytes.items.len);
+                try result.rows.append(context.arena, row_bytes);
                 print("\n", .{});
             }
 
@@ -789,7 +786,7 @@ pub const Muscle = struct {
         };
 
         // copy columns
-        try result.table_columns.appendSlice(table.?.columns);
+        try result.table_columns.appendSlice(context.arena, table.?.columns);
 
         const primary_key_data_type = table.?.columns[0].data_type;
         var first_page_in_level: ?muscle.PageNumber = table.?.root;
@@ -810,13 +807,13 @@ pub const Muscle = struct {
                     .free_space = _page.free_space(),
                     .left = _page.left,
                     .right = _page.right,
-                    .cells = std.ArrayList(SelectTableMetadataResult.DBPageCellMetadata).init(map.allocator),
+                    .cells = std.ArrayList(SelectTableMetadataResult.DBPageCellMetadata){},
                 };
 
                 for (0.._page.num_slots) |slot| {
                     const cell = _page.cell_at_slot(@intCast(slot));
 
-                    try page_info.cells.append(.{
+                    try page_info.cells.append(map.allocator, .{
                         .key = try map.allocator.dupe(u8, cell.get_keys_slice(
                             !_page.is_leaf(),
                             _primary_key_data_type,
@@ -859,17 +856,17 @@ pub const Muscle = struct {
     }
 
     fn select_database_info(self: *Muscle, metadata: *page_types.DBMetadataPage, context: *QueryContext) !void {
-        var free_pages = try std.BoundedArray(muscle.PageNumber, 128).init(0);
+        var free_pages = BoundedArray(muscle.PageNumber, 128){};
 
         if (metadata.first_free_page > 0) {
             var curr_page_number = metadata.first_free_page;
             while (curr_page_number > 0) {
                 // assert no duplicates
-                for (free_pages.constSlice()) |i| {
+                for (free_pages.const_slice()) |i| {
                     assert(i != curr_page_number);
                 }
 
-                try free_pages.append(curr_page_number);
+                free_pages.push(curr_page_number);
                 const curr_page = try self.pager.get_page(page_types.FreePage, curr_page_number);
                 curr_page_number = curr_page.next;
             }
@@ -881,7 +878,7 @@ pub const Muscle = struct {
         print("First free page: {any}\n", .{metadata.first_free_page});
 
         print("\nFree pages: ", .{});
-        for (free_pages.constSlice()) |page_number| {
+        for (free_pages.const_slice()) |page_number| {
             print("{d} -> ", .{page_number});
         }
         print("0\n", .{});

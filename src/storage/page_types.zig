@@ -44,7 +44,7 @@ pub const DBMetadataPage = extern struct {
     }
 
     pub fn set_tables(self: *DBMetadataPage, allocator: std.mem.Allocator, tables: []muscle.Table) !void {
-        const json = try std.json.stringifyAlloc(allocator, tables, .{});
+        const json = try std.json.Stringify.valueAlloc(allocator, tables, .{});
         defer allocator.free(json);
 
         self.tables = [_]u8{0} ** 4080;

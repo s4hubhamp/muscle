@@ -16,6 +16,7 @@ const FreePage = page_types.FreePage;
 const Page = page_types.Page;
 const MAX_DIRTY_COUNT_BEFORE_COMMIT = constants.MAX_DIRTY_COUNT_BEFORE_COMMIT;
 const serde = muscle.common.serde;
+const BoundedArray = muscle.common.BoundedArray;
 
 // PageManager is responsible to manage pages of database file.
 // It's job is to read and interpret the page by page number
@@ -27,7 +28,7 @@ const PageManager = @This();
 allocator: std.mem.Allocator,
 io: IO,
 cache: BufferPoolManager,
-dirty_pages: std.BoundedArray(PageNumber, MAX_DIRTY_COUNT_BEFORE_COMMIT),
+dirty_pages: BoundedArray(PageNumber, MAX_DIRTY_COUNT_BEFORE_COMMIT),
 journal: Journal,
 
 pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageManager {
@@ -45,10 +46,10 @@ pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageM
         _ = try io.write(0, &metadata_buffer);
     }
 
-    var dirty_pages = try std.BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT).init(0);
+    var dirty_pages = BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT){};
     var cache = try BufferPoolManager.init(allocator);
     // insert metadata page into cache
-    try cache.put(0, metadata_buffer, dirty_pages.constSlice());
+    try cache.put(0, metadata_buffer, dirty_pages.const_slice());
 
     // allocator for arrays
     return PageManager{
@@ -129,7 +130,7 @@ fn mark_dirty(self: *PageManager, page_number: PageNumber) !void {
     // commit if we reach max dirty pages
     if (self.dirty_pages.len == self.dirty_pages.capacity()) try self.commit(false);
     // mark dirty
-    try self.dirty_pages.append(page_number);
+    self.dirty_pages.push(page_number);
 }
 
 // update page inside the cache recording it's original state and
@@ -140,7 +141,7 @@ pub fn update_page(self: *PageManager, page_number: u32, page_ptr: anytype) !voi
     // Hence, we can't always expect the page which we are going to update to be inside cache.
     const original: *const [4096]u8 = try self.get_page_bytes_from_cache_or_disk(page_number);
     var is_dirty = false;
-    for (self.dirty_pages.constSlice()) |item| {
+    for (self.dirty_pages.const_slice()) |item| {
         if (item == page_number) {
             is_dirty = true;
             break;
@@ -159,7 +160,7 @@ pub fn update_page(self: *PageManager, page_number: u32, page_ptr: anytype) !voi
 
     // update cache with latest version
     const serialized_bytes: [PAGE_SIZE]u8 = try page_ptr.to_bytes();
-    try self.cache.put(page_number, serialized_bytes, self.dirty_pages.constSlice());
+    try self.cache.put(page_number, serialized_bytes, self.dirty_pages.const_slice());
 }
 
 fn get_page_bytes_from_cache_or_disk(self: *PageManager, page_number: u32) !*const [PAGE_SIZE]u8 {
@@ -178,7 +179,7 @@ fn get_page_bytes_from_cache_or_disk(self: *PageManager, page_number: u32) !*con
         }
 
         if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
-        try self.cache.put(page_number, buffer, self.dirty_pages.constSlice());
+        try self.cache.put(page_number, buffer, self.dirty_pages.const_slice());
     }
 
     return self.cache.get(page_number).?;
@@ -214,7 +215,7 @@ pub fn alloc_free_page(self: *PageManager, metadata: *DBMetadataPage) !u32 {
         // mark dirty
         try self.mark_dirty(free_page_number);
         // put inside the cache
-        try self.cache.put(free_page_number, try FreePage.init().to_bytes(), self.dirty_pages.constSlice());
+        try self.cache.put(free_page_number, try FreePage.init().to_bytes(), self.dirty_pages.const_slice());
         // save to journal
         self.journal.maybe_set_first_newly_alloced_page(free_page_number);
         metadata.total_pages += 1;

@@ -27,22 +27,30 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
     return page_struct;
 }
 
-pub fn serailize_value(buffer: *std.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
+pub fn serailize_value(buffer: *muscle.common.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
     switch (val) {
         .int => |i| {
+            if (buffer.capacity() - buffer.len < 8) return error.RowTooBig;
+
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(i64, &tmp, i, .little);
-            try buffer.appendSlice(&tmp);
+            buffer.push_slice(&tmp);
         },
         .real => |i| {
+            if (buffer.capacity() - buffer.len < 8) return error.RowTooBig;
+
             var tmp: [8]u8 = undefined;
             std.mem.writeInt(i64, &tmp, @as(i64, @bitCast(i)), .little);
-            try buffer.appendSlice(&tmp);
+            buffer.push_slice(&tmp);
         },
         .bool => |b| {
-            try buffer.append(if (b) 1 else 0);
+            if (buffer.capacity() - buffer.len < 8) return error.RowTooBig;
+
+            buffer.push(if (b) 1 else 0);
         },
         .txt => |str| {
+            if (buffer.capacity() - buffer.len < (2 + str.len)) return error.RowTooBig;
+
             var tmp: [2]u8 = undefined;
             std.mem.writeInt(
                 u16,
@@ -50,10 +58,13 @@ pub fn serailize_value(buffer: *std.BoundedArray(u8, page_types.Page.CONTENT_MAX
                 @intCast(str.len), // safe because we check the length before reaching here
                 .little,
             );
-            try buffer.appendSlice(&tmp);
-            try buffer.appendSlice(str);
+
+            buffer.push_slice(&tmp);
+            buffer.push_slice(str);
         },
         .bin => |blob| {
+            if (buffer.capacity() - buffer.len < (2 + blob.len)) return error.RowTooBig;
+
             var tmp: [2]u8 = undefined;
             std.mem.writeInt(
                 u16,
@@ -61,8 +72,9 @@ pub fn serailize_value(buffer: *std.BoundedArray(u8, page_types.Page.CONTENT_MAX
                 @intCast(blob.len), // safe because we check the length before reaching here
                 .little,
             );
-            try buffer.appendSlice(&tmp);
-            try buffer.appendSlice(blob);
+
+            buffer.push_slice(&tmp);
+            buffer.push_slice(blob);
         },
         .null => {
             // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example

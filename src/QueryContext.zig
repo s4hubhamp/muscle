@@ -15,7 +15,7 @@ pub fn set_data(self: *QueryContext, data: query_result.Data) void {
     self.result = .{ .data = data };
 }
 
-pub fn set_err(self: *QueryContext, code: anyerror, comptime template: []const u8, args: anytype) std.fmt.AllocPrintError!void {
+pub fn set_err(self: *QueryContext, code: anyerror, comptime template: []const u8, args: anytype) std.mem.Allocator.Error!void {
     self.result = .{ .err = .{
         .code = code,
         .message = try std.fmt.allocPrint(self.arena, template, args),
