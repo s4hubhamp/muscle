@@ -6,7 +6,6 @@ const serde = muscle.common.serde;
 const helpers = muscle.common.helpers;
 const database = muscle.database;
 const Muscle = database.Muscle;
-const SelectTableMetadataResult = database.SelectTableMetadataResult;
 const Query = database.Query;
 
 test "test tree operations on text primary key. Every leaf node can hold max one key and every internal node can hold max two keys" {
@@ -839,7 +838,7 @@ test "stress test randomized operations on larger dataset" {
     std.debug.print("Large dataset stress test completed successfully!\n", .{});
 }
 
-fn validate_btree(metadata: *const SelectTableMetadataResult) !void {
+fn validate_btree(metadata: *const muscle.query_result.SelectTableMetadataResult) !void {
     const t = std.time.milliTimestamp();
 
     var allocator = metadata.pages.allocator;

@@ -5,17 +5,12 @@ const QueryContext = @import("QueryContext.zig");
 
 const print = std.debug.print;
 const assert = std.debug.assert;
-const BTree = muscle.execution.BTree;
+const BTree = muscle.BTree;
 const errors = muscle.common.errors;
-const page_types = muscle.storage.page_types;
-const PageManager = muscle.storage.PageManager;
+const page_types = muscle.page_types;
+const PageManager = muscle.PageManager;
 const serde = muscle.common.serde;
 const BoundedArray = muscle.common.BoundedArray;
-
-// @Todo should this be temporary?
-pub const SelectTableMetadataResult = query_result.SelectTableMetadataResult;
-pub const SelectDatabaseMetadataResult = query_result.SelectDatabaseMetadataResult;
-pub const SelectResult = query_result.SelectResult;
 
 // The database object. This is main API to interact with the database.
 pub const Muscle = struct {
@@ -509,7 +504,7 @@ pub const Muscle = struct {
         const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
 
         var result_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, if (payload.columns.len > 0) payload.columns.len else table.columns.len);
-        var result = SelectResult{
+        var result = query_result.SelectResult{
             .columns = result_columns,
             .rows = try std.ArrayList(std.ArrayList(u8)).initCapacity(
                 context.arena,
@@ -640,6 +635,7 @@ pub const Muscle = struct {
         payload: SelectTableMetadata,
     ) !void {
         _ = self;
+        const SelectTableMetadataResult = query_result.SelectTableMetadataResult;
 
         const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
 
@@ -762,7 +758,7 @@ pub const Muscle = struct {
 
         assert(metadata.free_pages == free_pages.len);
 
-        context.set_data(.{ .select_database_info = SelectDatabaseMetadataResult{
+        context.set_data(.{ .select_database_info = query_result.SelectDatabaseMetadataResult{
             .n_total_pages = metadata.total_pages,
             .n_free_pages = metadata.free_pages,
             .first_free_page = metadata.first_free_page,

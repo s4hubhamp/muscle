@@ -2,7 +2,7 @@ const std = @import("std");
 const muscle = @import("../muscle.zig");
 
 const assert = std.debug.assert;
-const page_types = muscle.storage.page_types;
+const page_types = muscle.page_types;
 
 pub fn serialize_page(page_struct: anytype) ![muscle.PAGE_SIZE]u8 {
     comptime {

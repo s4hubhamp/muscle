@@ -7,13 +7,13 @@ pub const QueryContext = @This();
 input: []const u8, // query string
 arena: std.mem.Allocator,
 result: query_result.QueryResult,
-pager: *muscle.storage.PageManager,
+pager: *muscle.PageManager,
 catalog: *muscle.Catalog_Manager,
 
 pub fn init(
     arena: std.mem.Allocator,
     input: []const u8,
-    pager: *muscle.storage.PageManager,
+    pager: *muscle.PageManager,
     catalog: *muscle.Catalog_Manager,
 ) QueryContext {
     return QueryContext{

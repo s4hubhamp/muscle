@@ -1,17 +1,17 @@
 const std = @import("std");
-pub const database = @import("database.zig");
 
+pub const database = @import("database.zig");
 pub const common = @import("common.zig");
-pub const storage = @import("storage.zig");
-pub const execution = @import("execution.zig");
-pub const parser = @import("parser.zig");
+pub const PageManager = @import("storage/PageManager.zig");
+pub const page_types = @import("storage/page_types.zig");
+pub const BTree = @import("execution/BTree.zig");
 pub const QueryContext = @import("QueryContext.zig");
 pub const query_result = @import("query_result.zig");
-pub const Catalog_Manager = @import("./catalog/CatalogManager.zig");
+pub const Catalog_Manager = @import("catalog/CatalogManager.zig");
+pub const Parser = @import("parser/Parser.zig");
+pub const Expression = @import("parser/Expression.zig").Expression;
+pub const Statement = @import("parser/Statement.zig").Statement;
 
-//
-// @Todo Types below are internal and should not be exposed outside
-//
 pub const Table = struct {
     // btree root page
     root: u32,
@@ -131,6 +131,7 @@ const DefaultValue = union(enum) {
         };
     }
 };
+
 pub const Index = struct {
     // root page of the index btree
     root: u32,
@@ -152,5 +153,5 @@ pub const PAGE_SIZE = 4096;
 pub const PageNumber = u32;
 
 test {
-    @import("std").testing.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }

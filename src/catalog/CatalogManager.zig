@@ -1,7 +1,7 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
-const page_types = muscle.storage.page_types;
-const PageManager = muscle.storage.PageManager;
+const page_types = muscle.page_types;
+const PageManager = muscle.PageManager;
 
 const Self = @This();
 

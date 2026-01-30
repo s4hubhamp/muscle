@@ -1076,7 +1076,7 @@ test "parseSelect" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var pager = try muscle.PageManager.init(file.file_path, std.testing.allocator);
     var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
     defer {
         pager.deinit();
@@ -1192,7 +1192,7 @@ test "parseInsert" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var pager = try muscle.PageManager.init(file.file_path, std.testing.allocator);
     var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
     defer {
         pager.deinit();
@@ -1310,7 +1310,7 @@ test "parseUpdate" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var pager = try muscle.PageManager.init(file.file_path, std.testing.allocator);
     var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
     defer {
         pager.deinit();
@@ -1428,7 +1428,7 @@ test "parseCreateTable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var pager = try muscle.PageManager.init(file.file_path, std.testing.allocator);
     var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
     defer {
         pager.deinit();
@@ -1709,7 +1709,7 @@ test "parseDropTable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var pager = try muscle.PageManager.init(file.file_path, std.testing.allocator);
     var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
     defer {
         pager.deinit();
@@ -1888,7 +1888,7 @@ test "parseDelete" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var pager = try muscle.PageManager.init(file.file_path, std.testing.allocator);
     var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
     defer {
         pager.deinit();
