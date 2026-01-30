@@ -21,6 +21,7 @@ pub const SelectResult = query_result.SelectResult;
 pub const Muscle = struct {
     allocator: std.mem.Allocator,
     pager: PageManager,
+    catalog: muscle.Catalog_Manager,
 
     pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Muscle {
         var pager = try PageManager.init(database_file_path, allocator);
@@ -29,11 +30,15 @@ pub const Muscle = struct {
         print("Calling Rollback after instance start.\n", .{});
         try pager.rollback();
 
-        return Muscle{ .allocator = allocator, .pager = pager };
+        // rollback could update catalog hence we init it after rollback
+        const catalog = try muscle.Catalog_Manager.init(allocator, &pager);
+
+        return Muscle{ .allocator = allocator, .pager = pager, .catalog = catalog };
     }
 
     pub fn deinit(self: *Muscle) void {
         self.pager.deinit();
+        self.catalog.deinit();
     }
 
     //pub fn execute(self: *Muscle, arena: std.mem.Allocator, query: []const u8) !void {
@@ -46,71 +51,59 @@ pub const Muscle = struct {
     //}
 
     pub fn execute_query(self: *Muscle, query: Query, arena: std.mem.Allocator) !query_result.QueryResult {
-        var context = QueryContext.init(arena, "");
+        var context = QueryContext.init(arena, "", &self.pager, &self.catalog);
 
         var is_update_query = false;
         var should_rollback = false;
 
-        //
-        // The details that almost all the queries need are prepared here.
-        // Tried to keep parsed tables inside the pager but to make sure it syncs
-        // with current state of raw metadata page and through all rollbacks/commits
-        // is pretty difficult.
-        // Perhaps the correct thing to do is making the decoding of metadata page faster,
-        // we never keep it in journal to keep the journal simpler.
-        //
-        var metadata_page = try self.pager.get_page(page_types.DBMetadataPage, 0);
-        const parsed = try metadata_page.parse_tables(arena);
-        const tables = parsed.value;
-
         switch (query) {
             Query.create_table => |payload| {
                 is_update_query = true;
-                self.create_table(&metadata_page, &context, tables, payload) catch |err| {
+                self.create_table(&context, payload) catch |err| {
                     should_rollback = true;
                     try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.drop_table => |payload| {
                 is_update_query = true;
-                self.drop_table(&metadata_page, tables, payload) catch |err| {
+                self.drop_table(&context, payload) catch |err| {
                     should_rollback = true;
                     try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.insert => |payload| {
                 is_update_query = true;
-                self.insert(&metadata_page, &context, tables, payload) catch |err| {
+                self.insert(&context, payload) catch |err| {
                     should_rollback = true;
                     try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.update => |payload| {
                 is_update_query = true;
-                self.update(&metadata_page, &context, tables, payload) catch |err| {
+                self.update(&context, payload) catch |err| {
                     should_rollback = true;
                     try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.delete => |payload| {
                 is_update_query = true;
-                self.delete(&metadata_page, &context, tables, payload) catch |err| {
+                self.delete(&context, payload) catch |err| {
                     should_rollback = true;
                     try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.select => |payload| {
-                self.select(&metadata_page, &context, tables, payload) catch |err| {
+                self.select(&context, payload) catch |err| {
                     try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.select_table_info => |payload| {
-                self.select_table_info(&metadata_page, &context, tables, payload) catch |err| {
+                self.select_table_info(&context, payload) catch |err| {
                     try maybe_create_client_error_response(&context, err);
                 };
             },
             Query.select_database_info => {
-                self.select_database_info(&metadata_page, &context) catch |err| {
+                self.select_database_info(&context) catch |err| {
                     try maybe_create_client_error_response(&context, err);
                 };
             },
@@ -147,35 +140,35 @@ pub const Muscle = struct {
         }
     }
 
-    fn create_table(
-        self: *Muscle,
-        metadata: *page_types.DBMetadataPage,
-        query_context: *QueryContext,
-        tables: []muscle.Table,
-        payload: CreateTablePayload,
-    ) !void {
-        var tables_list = try std.ArrayList(muscle.Table).initCapacity(query_context.arena, tables.len + 1);
-        var columns = try std.ArrayList(muscle.Column).initCapacity(query_context.arena, payload.columns.len + 1);
+    fn create_table(self: *Muscle, context: *QueryContext, payload: CreateTablePayload) !void {
+        _ = self;
 
-        for (tables) |table| {
-            if (std.mem.eql(u8, table.name, payload.table_name)) {
-                return error.DuplicateTableName;
-            }
+        if (context.catalog.find_table(payload.table_name) != null) {
+            try context.set_err(error.DuplicateTableName, "Table {s} already exists", .{payload.table_name});
+            return error.DuplicateTableName;
         }
-
-        try tables_list.appendSlice(query_context.arena, tables);
 
         // check for duplicate column names
         for (payload.columns[0 .. payload.columns.len - 1], 0..) |*col, i| {
             for (payload.columns[i + 1 ..]) |*col2| {
-                if (std.mem.eql(u8, col.name, col2.name)) return error.DuplicateColumnName;
+                if (std.mem.eql(u8, col.name, col2.name)) {
+                    try context.set_err(error.DuplicateColumnName, "Duplicate columns with name {s}", .{col.name});
+                    return error.DuplicateColumnName;
+                }
             }
         }
+
+        var columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, payload.columns.len + 1);
 
         for (payload.columns, 0..) |*c, i| {
             var column = c.*;
 
             if (column.auto_increment and column.data_type != .int) {
+                try context.set_err(
+                    error.AutoIncrementColumnMustBeInteger,
+                    "Auto increment column must be of type Integer. Column {s} is {s}",
+                    .{ column.name, @tagName(column.data_type) },
+                );
                 return error.AutoIncrementColumnMustBeInteger;
             }
 
@@ -187,6 +180,11 @@ pub const Muscle = struct {
                     .txt, .bin => |len| {
                         // for text we store len as first param
                         if (len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(u16)) {
+                            try context.set_err(
+                                error.PrimaryKeyMaxLengthExceeded,
+                                "Primary key column length cannot exceed {d}",
+                                .{page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(u16)},
+                            );
                             return error.PrimaryKeyMaxLengthExceeded;
                         }
                     },
@@ -204,10 +202,10 @@ pub const Muscle = struct {
                 }
 
                 // primary key column gets stored at beginning
-                try columns.insert(query_context.arena, 0, column);
+                try columns.insert(context.arena, 0, column);
             } else {
                 // @Perf Can we reorder columns for efficient operations?
-                try columns.append(query_context.arena, column);
+                try columns.append(context.arena, column);
             }
         }
 
@@ -215,7 +213,7 @@ pub const Muscle = struct {
         if (payload.primary_key_column_index == null) {
             const DEFAULT_PRIMARY_KEY_COLUMN_NAME = "Row_Id";
             const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .int;
-            try columns.insert(query_context.arena, 0, muscle.Column{
+            try columns.insert(context.arena, 0, muscle.Column{
                 .name = DEFAULT_PRIMARY_KEY_COLUMN_NAME,
                 .data_type = DEFAULT_PRIMARY_KEY_COLUMN_TYPE,
                 .auto_increment = true,
@@ -225,58 +223,36 @@ pub const Muscle = struct {
             });
         }
 
-        const root_page_number = try self.pager.alloc_free_page(metadata);
+        const root_page_number = try context.pager.alloc_free_page(context.catalog.metadata);
         // initialize root page
         const root_page = page_types.Page.init();
-        try self.pager.update_page(root_page_number, &root_page);
+        try context.pager.update_page(root_page_number, &root_page);
 
         const table = muscle.Table{
             .root = root_page_number,
             .name = payload.table_name,
             .columns = columns.items,
-            .indexes = &[0]muscle.Index{},
+            .indexes = &.{},
         };
 
-        // append a new table entry
-        try tables_list.append(query_context.arena, table);
-
-        // update tables
-        try metadata.set_tables(query_context.arena, tables_list.items[0..]);
-        // update metadata
-        try self.pager.update_page(0, metadata);
+        try context.catalog.create_table(context.pager, table);
     }
 
-    fn drop_table(
-        self: *Muscle,
-        metadata: *page_types.DBMetadataPage,
-        tables: []muscle.Table,
-        payload: DropTablePayload,
-    ) !void {
+    fn drop_table(self: *Muscle, context: *QueryContext, payload: DropTablePayload) !void {
         _ = self;
-        _ = metadata;
-        _ = tables;
+        _ = context;
         _ = payload;
 
         unreachable;
     }
 
-    fn insert(
-        self: *Muscle,
-        metadata_page: *page_types.DBMetadataPage,
-        context: *QueryContext,
-        tables: []muscle.Table,
-        payload: InsertPayload,
-    ) !void {
-        var table: ?*muscle.Table = null;
-        for (tables) |*t| {
-            if (std.mem.eql(u8, t.name, payload.table_name)) {
-                table = t;
-            }
-        }
+    fn insert(self: *Muscle, context: *QueryContext, payload: InsertPayload) !void {
+        _ = self;
 
-        if (table == null) {
+        var table: muscle.Table = if (context.catalog.find_table(payload.table_name)) |t|
+            try t.clone(context.arena)
+        else
             return error.TableNotFound;
-        }
 
         const find_value = struct {
             fn f(
@@ -291,24 +267,11 @@ pub const Muscle = struct {
             }
         }.f;
 
-        const find_column = struct {
-            fn f(
-                columns: []const muscle.Column,
-                column_name: []const u8,
-            ) bool {
-                for (columns) |*col| {
-                    if (std.mem.eql(u8, col.name, column_name)) return true;
-                }
-
-                return false;
-            }
-        }.f;
-
-        // check for duplicate columns and whether columns even exists
+        // check for columns and duplicates
         if (payload.values.len > 1) {
             for (payload.values, 0..) |*v1, i| {
-                if (!find_column(table.?.columns, v1.column_name))
-                    return error.ColumnDoesNotExist;
+                if (table.find_column(v1.column_name) == null) return error.ColumnDoesNotExist;
+
                 for (payload.values[i + 1 ..]) |*v2| {
                     if (std.mem.eql(u8, v1.column_name, v2.column_name))
                         return error.DuplicateColumns;
@@ -324,7 +287,7 @@ pub const Muscle = struct {
         var primary_key_type: muscle.DataType = undefined;
 
         // for each column find value
-        for (table.?.columns, 0..) |*column, i| {
+        for (table.columns, 0..) |*column, i| {
             const value = find_value(column.name, payload.values);
             var final_value_to_serialize: muscle.Value = .{ .null = {} };
 
@@ -390,40 +353,22 @@ pub const Muscle = struct {
         }
 
         // Important to initiate BTree everytime OR have correct reference to metadata_page every time
-        var btree = BTree.init(
-            &self.pager,
-            metadata_page,
-            table.?.root,
-            primary_key_type,
-            context.arena,
-        );
-
+        var btree = BTree.init(context, table.root, primary_key_type);
         try btree.insert(primary_key_bytes, buffer.const_slice());
 
         // update metadata
-        try metadata_page.set_tables(context.arena, tables);
-        try self.pager.update_page(0, metadata_page);
+        try context.catalog.update_table(context.pager, table);
 
         context.set_data(.{ .insert = .{ .rows_created = 1 } });
     }
 
-    fn update(
-        self: *Muscle,
-        metadata_page: *page_types.DBMetadataPage,
-        context: *QueryContext,
-        tables: []muscle.Table,
-        payload: UpdatePayload,
-    ) !void {
-        var table: ?*muscle.Table = null;
-        for (tables) |*t| {
-            if (std.mem.eql(u8, t.name, payload.table_name)) {
-                table = t;
-            }
-        }
+    fn update(self: *Muscle, context: *QueryContext, payload: UpdatePayload) !void {
+        _ = self;
 
-        if (table == null) {
+        var table: muscle.Table = if (context.catalog.find_table(payload.table_name)) |t|
+            try t.clone(context.arena)
+        else
             return error.TableNotFound;
-        }
 
         const find_value = struct {
             fn f(
@@ -438,27 +383,12 @@ pub const Muscle = struct {
             }
         }.f;
 
-        const find_column = struct {
-            fn f(
-                columns: []const muscle.Column,
-                column_name: []const u8,
-            ) bool {
-                for (columns) |*col| {
-                    if (std.mem.eql(u8, col.name, column_name)) return true;
-                }
-
-                return false;
-            }
-        }.f;
-
         // check for duplicate columns and whether columns even exists
         if (payload.values.len > 1) {
             for (payload.values, 0..) |*v1, i| {
-                if (!find_column(table.?.columns, v1.column_name))
-                    return error.ColumnDoesNotExist;
+                if (table.find_column(v1.column_name) == null) return error.ColumnDoesNotExist;
                 for (payload.values[i + 1 ..]) |*v2| {
-                    if (std.mem.eql(u8, v1.column_name, v2.column_name))
-                        return error.DuplicateColumns;
+                    if (std.mem.eql(u8, v1.column_name, v2.column_name)) return error.DuplicateColumns;
                 }
             }
         }
@@ -471,7 +401,7 @@ pub const Muscle = struct {
         var primary_key_type: muscle.DataType = undefined;
 
         // for each column find value
-        for (table.?.columns, 0..) |*column, i| {
+        for (table.columns, 0..) |*column, i| {
             const value = find_value(column.name, payload.values);
             var final_value_to_serialize: muscle.Value = .{ .null = {} };
 
@@ -537,42 +467,26 @@ pub const Muscle = struct {
         }
 
         // Important to initiate BTree everytime OR have correct reference to metadata_page every time
-        var btree = BTree.init(
-            &self.pager,
-            metadata_page,
-            table.?.root,
-            primary_key_type,
-            context.arena,
-        );
-
+        var btree = BTree.init(context, table.root, primary_key_type);
         try btree.update(primary_key_bytes, buffer.const_slice());
 
         // update metadata
-        try metadata_page.set_tables(context.arena, tables);
-        try self.pager.update_page(0, metadata_page);
+        try context.catalog.update_table(context.pager, table);
 
         context.set_data(.{ .update = .{ .rows_affected = 1 } });
     }
 
     fn delete(
         self: *Muscle,
-        metadata_page: *page_types.DBMetadataPage,
         context: *QueryContext,
-        tables: []muscle.Table,
         payload: DeletePayload,
     ) !void {
-        var table: ?*muscle.Table = null;
-        for (tables) |*t| {
-            if (std.mem.eql(u8, t.name, payload.table_name)) {
-                table = t;
-            }
-        }
+        _ = self;
 
-        if (table == null) {
-            return error.TableNotFound;
-        }
+        const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
 
-        if (@intFromEnum(table.?.columns[0].data_type) != @intFromEnum(payload.key)) {
+        // right now all deletes are by pk
+        if (@intFromEnum(table.columns[0].data_type) != @intFromEnum(payload.key)) {
             return error.TypeMismatch;
         }
 
@@ -581,41 +495,20 @@ pub const Muscle = struct {
         try serde.serailize_value(&buffer, payload.key);
 
         // Important to initiate BTree everytime OR have correct reference to metadata_page every time
-        var btree = BTree.init(
-            &self.pager,
-            metadata_page,
-            table.?.root,
-            table.?.columns[0].data_type,
-            context.arena,
-        );
-
+        var btree = BTree.init(context, table.root, table.columns[0].data_type);
         try btree.delete(buffer.const_slice());
-
-        // update metadata
-        try self.pager.update_page(0, metadata_page);
     }
 
     fn select(
         self: *Muscle,
-        metadata: *page_types.DBMetadataPage,
         context: *QueryContext,
-        tables: []muscle.Table,
         payload: SelectPayload,
     ) !void {
-        //_ = metadata;
+        _ = self;
 
-        var table: ?muscle.Table = null;
-        for (tables) |t| {
-            if (std.mem.eql(u8, t.name, payload.table_name)) {
-                table = t;
-            }
-        }
+        const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
 
-        if (table == null) {
-            return error.TableNotFound;
-        }
-
-        var result_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, if (payload.columns.len > 0) payload.columns.len else table.?.columns.len);
+        var result_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, if (payload.columns.len > 0) payload.columns.len else table.columns.len);
         var result = SelectResult{
             .columns = result_columns,
             .rows = try std.ArrayList(std.ArrayList(u8)).initCapacity(
@@ -625,25 +518,12 @@ pub const Muscle = struct {
         };
 
         if (payload.columns.len == 0) {
-            try result_columns.appendSlice(context.arena, table.?.columns);
+            try result_columns.appendSlice(context.arena, table.columns);
         } else {
-            const find_column = struct {
-                fn f(
-                    columns: []const muscle.Column,
-                    column_name: []const u8,
-                ) ?usize {
-                    for (columns, 0..) |*col, i| {
-                        if (std.mem.eql(u8, col.name, column_name)) return i;
-                    }
-
-                    return null;
-                }
-            }.f;
-
             // validate selected columns and copy inside the results_columns
             for (payload.columns) |col| {
-                if (find_column(table.?.columns, col)) |i| {
-                    try result_columns.append(context.arena, table.?.columns[i]);
+                if (table.find_column(col)) |column| {
+                    try result_columns.append(context.arena, column.*);
                 } else {
                     return error.ColumnNotFound;
                 }
@@ -651,14 +531,14 @@ pub const Muscle = struct {
         }
 
         var serial: usize = 1;
-        var curr_page_number = table.?.root;
+        var curr_page_number = table.root;
 
         // find the leftmost leaf node
-        var curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
+        var curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
         while (!curr_page.is_leaf()) {
             assert(curr_page.cell_at_slot(0).left_child != 0);
             curr_page_number = curr_page.cell_at_slot(0).left_child;
-            curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
+            curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
         }
 
         //std.debug.print("\n\n*****************************************************************\n", .{});
@@ -737,12 +617,17 @@ pub const Muscle = struct {
 
             if (curr_page.right == 0) break;
             curr_page_number = curr_page.right;
-            curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
+            curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
         }
 
-        print("\n\ndatabase metadata: total_pages: {any} free_pages:{any} first_free_page:{any}", .{
-            metadata.total_pages, metadata.free_pages, metadata.first_free_page,
-        });
+        print(
+            "\n\ndatabase metadata: total_pages: {any} free_pages:{any} first_free_page:{any}",
+            .{
+                context.catalog.metadata.total_pages,
+                context.catalog.metadata.free_pages,
+                context.catalog.metadata.first_free_page,
+            },
+        );
 
         std.debug.print("\n\n*****************************************************************\n\n", .{});
 
@@ -751,45 +636,33 @@ pub const Muscle = struct {
 
     fn select_table_info(
         self: *Muscle,
-        metadata: *page_types.DBMetadataPage,
         context: *QueryContext,
-        tables: []muscle.Table,
         payload: SelectTableMetadata,
     ) !void {
-        _ = metadata;
+        _ = self;
 
-        var table: ?muscle.Table = null;
-        for (tables) |t| {
-            if (std.mem.eql(u8, t.name, payload.table_name)) {
-                table = t;
-            }
-        }
-
-        if (table == null) {
-            return error.TableNotFound;
-        }
+        const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
 
         // use BFS and insert all the page info inside the hash table
         // also record total cells
-
         var result = SelectTableMetadataResult{
-            .root_page = table.?.root,
+            .root_page = table.root,
             .btree_height = 0,
             .btree_leaf_cells = 0,
             .btree_internal_cells = 0,
             .btree_leaf_pages = 0,
             .btree_internal_pages = 0,
             .table_columns = try std.ArrayList(muscle.Column)
-                .initCapacity(context.arena, table.?.columns.len),
+                .initCapacity(context.arena, table.columns.len),
             .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata)
                 .init(context.arena),
         };
 
         // copy columns
-        try result.table_columns.appendSlice(context.arena, table.?.columns);
+        try result.table_columns.appendSlice(context.arena, table.columns);
 
-        const primary_key_data_type = table.?.columns[0].data_type;
-        var first_page_in_level: ?muscle.PageNumber = table.?.root;
+        const primary_key_data_type = table.columns[0].data_type;
+        var first_page_in_level: ?muscle.PageNumber = table.root;
         var curr_page_number: muscle.PageNumber = undefined;
         var curr_page: page_types.Page = undefined;
 
@@ -832,7 +705,7 @@ pub const Muscle = struct {
         while (first_page_in_level != null) {
             result.btree_height += 1;
             curr_page_number = first_page_in_level.?;
-            curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
+            curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
             first_page_in_level =
                 if (!curr_page.is_leaf()) curr_page.child_at_slot(0) else null;
 
@@ -848,15 +721,18 @@ pub const Muscle = struct {
                 }
 
                 curr_page_number = curr_page.right;
-                curr_page = try self.pager.get_page(page_types.Page, curr_page_number);
+                curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
             }
         }
 
         context.set_data(.{ .select_table_info = result });
     }
 
-    fn select_database_info(self: *Muscle, metadata: *page_types.DBMetadataPage, context: *QueryContext) !void {
+    fn select_database_info(self: *Muscle, context: *QueryContext) !void {
+        _ = self;
+
         var free_pages = BoundedArray(muscle.PageNumber, 128){};
+        const metadata = context.catalog.metadata;
 
         if (metadata.first_free_page > 0) {
             var curr_page_number = metadata.first_free_page;
@@ -867,7 +743,7 @@ pub const Muscle = struct {
                 }
 
                 free_pages.push(curr_page_number);
-                const curr_page = try self.pager.get_page(page_types.FreePage, curr_page_number);
+                const curr_page = try context.pager.get_page(page_types.FreePage, curr_page_number);
                 curr_page_number = curr_page.next;
             }
         }

@@ -33,24 +33,6 @@ pub const DBMetadataPage = extern struct {
     pub fn to_bytes(self: *const DBMetadataPage) ![muscle.PAGE_SIZE]u8 {
         return try serde.serialize_page(self.*);
     }
-
-    pub fn parse_tables(self: *const DBMetadataPage, allocator: std.mem.Allocator) !std.json.Parsed([]muscle.Table) {
-        return std.json.parseFromSlice(
-            []muscle.Table,
-            allocator,
-            self.tables[0..self.tables_len],
-            .{ .allocate = .alloc_always },
-        );
-    }
-
-    pub fn set_tables(self: *DBMetadataPage, allocator: std.mem.Allocator, tables: []muscle.Table) !void {
-        const json = try std.json.Stringify.valueAlloc(allocator, tables, .{});
-        defer allocator.free(json);
-
-        self.tables = [_]u8{0} ** 4080;
-        self.tables_len = @intCast(json.len);
-        for (json, 0..) |char, i| self.tables[i] = char;
-    }
 };
 
 //

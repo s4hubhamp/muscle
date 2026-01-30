@@ -5,6 +5,7 @@ const Expression = @import("expression.zig").Expression;
 const BinaryOperator = @import("expression.zig").BinaryOperator;
 const UnaryOperator = @import("expression.zig").UnaryOperator;
 const statement = @import("statement.zig");
+const helpers = muscle.common.helpers;
 
 const Statement = statement.Statement;
 const Assignment = statement.Assignment;
@@ -1069,10 +1070,20 @@ test {
 }
 
 test "parseSelect" {
+    var file = try helpers.get_temp_file_path("test_tree_operations");
+    defer file.deinit();
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
+    defer {
+        pager.deinit();
+        catalog.deinit();
+    }
+
+    var context = muscle.QueryContext.init(arena.allocator(), "", &pager, &catalog);
     var parser = Self.init(&context);
 
     {
@@ -1175,10 +1186,20 @@ test "parseSelect" {
 }
 
 test "parseInsert" {
+    var file = try helpers.get_temp_file_path("test_tree_operations");
+    defer file.deinit();
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
+    defer {
+        pager.deinit();
+        catalog.deinit();
+    }
+
+    var context = muscle.QueryContext.init(arena.allocator(), "", &pager, &catalog);
     var parser = Self.init(&context);
 
     {
@@ -1283,10 +1304,20 @@ test "parseInsert" {
 }
 
 test "parseUpdate" {
+    var file = try helpers.get_temp_file_path("test_tree_operations");
+    defer file.deinit();
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
+    defer {
+        pager.deinit();
+        catalog.deinit();
+    }
+
+    var context = muscle.QueryContext.init(arena.allocator(), "", &pager, &catalog);
     var parser = Self.init(&context);
 
     {
@@ -1391,10 +1422,20 @@ test "parseUpdate" {
 }
 
 test "parseCreateTable" {
+    var file = try helpers.get_temp_file_path("test_tree_operations");
+    defer file.deinit();
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
+    defer {
+        pager.deinit();
+        catalog.deinit();
+    }
+
+    var context = muscle.QueryContext.init(arena.allocator(), "", &pager, &catalog);
     var parser = Self.init(&context);
 
     // Test: Missing TABLE keyword
@@ -1662,10 +1703,20 @@ test "parseCreateTable" {
 }
 
 test "parseDropTable" {
+    var file = try helpers.get_temp_file_path("test_tree_operations");
+    defer file.deinit();
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
+    defer {
+        pager.deinit();
+        catalog.deinit();
+    }
+
+    var context = muscle.QueryContext.init(arena.allocator(), "", &pager, &catalog);
     var parser = Self.init(&context);
 
     // Test: Missing TABLE keyword
@@ -1831,10 +1882,20 @@ test "parseDropTable" {
 }
 
 test "parseDelete" {
+    var file = try helpers.get_temp_file_path("test_tree_operations");
+    defer file.deinit();
+
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var context = muscle.QueryContext.init(arena.allocator(), "");
+    var pager = try muscle.storage.PageManager.init(file.file_path, std.testing.allocator);
+    var catalog = try muscle.Catalog_Manager.init(std.testing.allocator, &pager);
+    defer {
+        pager.deinit();
+        catalog.deinit();
+    }
+
+    var context = muscle.QueryContext.init(arena.allocator(), "", &pager, &catalog);
     var parser = Self.init(&context);
 
     // Test: Missing FROM keyword

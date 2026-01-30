@@ -40,10 +40,13 @@ pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageM
     const bytes_read = try io.read(0, &metadata_buffer);
 
     if (bytes_read == 0) {
+        print("Initializing metadata for the first time.\n", .{});
         const initial_metadata = DBMetadataPage.init();
         const bytes = try initial_metadata.to_bytes();
         for (&bytes, 0..bytes.len) |*item, i| metadata_buffer[i] = item.*;
         _ = try io.write(0, &metadata_buffer);
+    } else {
+        if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
     }
 
     var dirty_pages = BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT){};
