@@ -65,6 +65,37 @@ fn search_internal(self: *const Self, key: []const u8) !std.ArrayList(PathDetail
     return path;
 }
 
+pub fn find(self: *Self, key: []const u8) !?[]u8 {
+    var page_number = self.root_page_number;
+    var node = try self.context.pager.get_page(Page, page_number);
+
+    // while we don't reach to leaf node
+    while (!node.is_leaf()) {
+        const search_result = node.search(key, self.primary_key_data_type);
+
+        const child_index = sw: switch (search_result) {
+            .found => |i| {
+                break :sw i;
+            },
+            .go_down => |i| {
+                break :sw i;
+            },
+        };
+
+        page_number = node.child_at_slot(child_index);
+        node = try self.context.pager.get_page(Page, page_number);
+    }
+
+    switch (node.search(key, self.primary_key_data_type)) {
+        .found => |slot_index| {
+            return try self.context.arena.dupe(u8, node.raw_cell_slice_at_slot(slot_index));
+        },
+        .go_down => {
+            return null;
+        },
+    }
+}
+
 pub fn insert(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
     var path = try self.search_internal(key);
     defer path.deinit(self.context.arena);
@@ -423,7 +454,6 @@ fn free_page(self: *Self, page_number: muscle.PageNumber) !void {
     try self.context.pager.free(self.context.catalog.metadata, page_number);
 }
 
-//@Perf Benchmark the cache hits and misses.
 fn get_divider_key(
     self: *Self,
     node: *const Page,

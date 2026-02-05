@@ -9,8 +9,7 @@ pub const QueryContext = @import("QueryContext.zig");
 pub const query_result = @import("query_result.zig");
 pub const Catalog_Manager = @import("catalog/CatalogManager.zig");
 pub const Parser = @import("parser/Parser.zig");
-pub const Expression = @import("parser/Expression.zig").Expression;
-pub const Statement = @import("parser/Statement.zig").Statement;
+pub const analyzer = @import("analyzer.zig");
 
 pub const Table = struct {
     // btree root page
@@ -113,7 +112,7 @@ pub const Value = union(enum) {
     }
 };
 
-const DefaultValue = union(enum) {
+pub const DefaultValue = union(enum) {
     null,
     // "HH:MM:SS"
     current_time,

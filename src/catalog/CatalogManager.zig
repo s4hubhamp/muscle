@@ -7,6 +7,7 @@ const Self = @This();
 
 allocator: std.mem.Allocator,
 metadata: *page_types.DBMetadataPage,
+// @Perf we might consider this to be hash table instead of arraylist for quick access.
 tables: std.ArrayList(muscle.Table),
 
 pub fn init(allocator: std.mem.Allocator, pager: *PageManager) !Self {

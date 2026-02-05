@@ -1,3 +1,4 @@
+const std = @import("std");
 const muscle = @import("../muscle.zig");
 
 pub const Expression = union(enum) {
@@ -9,8 +10,6 @@ pub const Expression = union(enum) {
     nested: ?*Expression,
 
     pub fn print(self: *const Expression) void {
-        const std = @import("std");
-
         switch (self.*) {
             .identifier => |id| std.debug.print("{s}", .{id}),
             .value => |val| {
@@ -76,3 +75,63 @@ pub const BinaryOperator = enum {
 };
 
 pub const UnaryOperator = enum { not, plus, minus };
+
+pub const Statement = union(enum) {
+    //
+    create_table: CreateTable,
+    select: Select,
+    delete: Delete,
+    update: Update,
+    insert: Insert,
+    drop_table: DropTable,
+    explain: Explain,
+
+    // Transaction
+    start,
+    rollback,
+    commit,
+};
+
+pub const CreateTable = struct {
+    table: []const u8,
+    columns: []muscle.Column,
+    primary_key_column_index: ?usize,
+};
+
+const Select = struct {
+    columns: []Expression,
+    table: []const u8,
+    where: ?Expression,
+    order_by: []Expression,
+    limit: usize,
+};
+
+const Delete = struct {
+    from: []const u8,
+    where: ?Expression,
+};
+
+const Update = struct {
+    table: []const u8,
+    assignments: []Assignment,
+    where: ?Expression,
+};
+
+pub const Assignment = struct {
+    column: []const u8,
+    value: Expression,
+};
+
+const Insert = struct {
+    into: []const u8,
+    columns: [][]const u8,
+    values: []Expression,
+};
+
+const DropTable = union(enum) {
+    table: []const u8,
+};
+
+const Explain = struct {
+    statement: *Statement,
+};

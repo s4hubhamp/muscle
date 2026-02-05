@@ -73,6 +73,9 @@ pub const ErrorClassification = enum {
 
 pub fn classify_error(err: anyerror) ErrorClassification {
     return switch (err) {
+        error.ParserError,
+        error.AnalyzerError,
+
         error.TableNotFound,
         error.DuplicateTableName,
         error.ColumnDoesNotExist,
