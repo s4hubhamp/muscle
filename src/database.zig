@@ -55,7 +55,7 @@ pub const Muscle = struct {
         for (statements) |statement| {
             switch (statement) {
                 .create_table => |payload| {
-                    self.create_table_new(&context, payload) catch |err| {
+                    self.create_table(&context, payload) catch |err| {
                         try maybe_create_client_error_response(&context, err);
                     };
                 },
@@ -88,13 +88,6 @@ pub const Muscle = struct {
         var should_rollback = false;
 
         switch (query) {
-            Query.create_table => |payload| {
-                is_update_query = true;
-                self.create_table(&context, payload) catch |err| {
-                    should_rollback = true;
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
             Query.drop_table => |payload| {
                 is_update_query = true;
                 self.drop_table(&context, payload) catch |err| {
@@ -172,7 +165,7 @@ pub const Muscle = struct {
         }
     }
 
-    fn create_table_new(self: *Muscle, context: *QueryContext, payload: muscle.Parser.types.CreateTable) !void {
+    fn create_table(self: *Muscle, context: *QueryContext, payload: muscle.Parser.types.CreateTable) !void {
         _ = self;
 
         if (context.catalog.find_table(payload.table) != null) {
@@ -251,104 +244,6 @@ pub const Muscle = struct {
         const table = muscle.Table{
             .root = root_page_number,
             .name = payload.table,
-            .columns = columns.items,
-            .indexes = &.{},
-        };
-
-        try context.catalog.create_table(context.pager, table);
-    }
-
-    fn create_table(self: *Muscle, context: *QueryContext, payload: CreateTablePayload) !void {
-        _ = self;
-
-        if (context.catalog.find_table(payload.table_name) != null) {
-            try context.set_err(error.DuplicateTableName, "Table {s} already exists", .{payload.table_name});
-            return error.DuplicateTableName;
-        }
-
-        // check for duplicate column names
-        for (payload.columns[0 .. payload.columns.len - 1], 0..) |*col, i| {
-            for (payload.columns[i + 1 ..]) |*col2| {
-                if (std.mem.eql(u8, col.name, col2.name)) {
-                    try context.set_err(error.DuplicateColumnName, "Duplicate columns with name {s}", .{col.name});
-                    return error.DuplicateColumnName;
-                }
-            }
-        }
-
-        var columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, payload.columns.len + 1);
-
-        for (payload.columns, 0..) |*c, i| {
-            var column = c.*;
-
-            if (column.auto_increment and column.data_type != .int) {
-                try context.set_err(
-                    error.AutoIncrementColumnMustBeInteger,
-                    "Auto increment column must be of type Integer. Column {s} is {s}",
-                    .{ column.name, @tagName(column.data_type) },
-                );
-                return error.AutoIncrementColumnMustBeInteger;
-            }
-
-            if (i == payload.primary_key_column_index) {
-                switch (column.data_type) {
-                    // bools can't be primary key
-                    .bool => return error.BadPrimaryKeyType,
-                    // for text and binaries we have a limit on length
-                    .txt, .bin => |len| {
-                        // for text we store len as first param
-                        if (len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(u16)) {
-                            try context.set_err(
-                                error.PrimaryKeyMaxLengthExceeded,
-                                "Primary key column length cannot exceed {d}",
-                                .{page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(u16)},
-                            );
-                            return error.PrimaryKeyMaxLengthExceeded;
-                        }
-                    },
-                    else => {},
-                }
-
-                // primary key should always be unique
-                column.unique = true;
-                column.not_null = true;
-
-                // if data_type is integer then it's basically alias to default primary key so we will enable all the defaults
-                if (column.data_type == .int) {
-                    column.auto_increment = true;
-                    column.max_int_value = 0;
-                }
-
-                // primary key column gets stored at beginning
-                try columns.insert(context.arena, 0, column);
-            } else {
-                // @Perf Can we reorder columns for efficient operations?
-                try columns.append(context.arena, column);
-            }
-        }
-
-        // create a default primary key column if not provided
-        if (payload.primary_key_column_index == null) {
-            const DEFAULT_PRIMARY_KEY_COLUMN_NAME = "Row_Id";
-            const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .int;
-            try columns.insert(context.arena, 0, muscle.Column{
-                .name = DEFAULT_PRIMARY_KEY_COLUMN_NAME,
-                .data_type = DEFAULT_PRIMARY_KEY_COLUMN_TYPE,
-                .auto_increment = true,
-                .not_null = true,
-                .unique = true,
-                .max_int_value = 0,
-            });
-        }
-
-        const root_page_number = try context.pager.alloc_free_page(context.catalog.metadata);
-        // initialize root page
-        const root_page = page_types.Page.init();
-        try context.pager.update_page(root_page_number, &root_page);
-
-        const table = muscle.Table{
-            .root = root_page_number,
-            .name = payload.table_name,
             .columns = columns.items,
             .indexes = &.{},
         };
@@ -890,12 +785,6 @@ pub const Muscle = struct {
     }
 };
 
-const CreateTablePayload = struct {
-    table_name: []const u8,
-    columns: []const muscle.Column,
-    primary_key_column_index: ?usize = null,
-};
-
 const DropTablePayload = struct {
     table_name: []const u8,
 };
@@ -929,7 +818,6 @@ const DeletePayload = struct {
 };
 
 pub const Query = union(enum) {
-    create_table: CreateTablePayload,
     drop_table: DropTablePayload,
     insert: InsertPayload,
     update: UpdatePayload,

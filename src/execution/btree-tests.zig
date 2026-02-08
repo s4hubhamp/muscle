@@ -28,24 +28,7 @@ test "test tree operations on text primary key. Every leaf node can hold max one
 
     const table_name = "devices";
 
-    {
-        const table_columns = [_]muscle.Column{
-            muscle.Column{
-                .name = "pk",
-                .data_type = muscle.DataType{ .txt = 2023 }, // 2031(max) - 8(Str len after serialization)
-            },
-            .{
-                .name = "datetime",
-                .data_type = muscle.DataType{ .int = {} },
-            },
-        };
-        const create_table_query: Query = Query{ .create_table = .{
-            .table_name = table_name,
-            .columns = &table_columns,
-            .primary_key_column_index = 0,
-        } };
-        _ = try db.execute_query(create_table_query, arena.allocator());
-    }
+    _ = try db.execute("create table devices (pk TEXT(2023) PRIMARY KEY, datetime INT)", arena.allocator());
 
     const get_insert_query = struct {
         fn f(pk: []const u8) Query {
@@ -248,28 +231,7 @@ test "regression test 1" {
         "CDCSZIALABYIWLMCFGWHYLKGHQGVBUSFDNGPWHIECAOGGPSLRUAZWUIMEPNMWETVSJYKYBOIPJVBCEWDOAEZJZUHZTGESIFKICZIUYWNOLOVCXUQFOCUAQRTJRPPQDMRFINPMMGKKEXFJZTNEWBXFYZKHZUWGUVNODLOZUFIRATEBMKVMHONCJZKJCIYDCFSQFOJRKSUEVBNAVEEJSEABWREEKAZWEDHEBIULNQZUCOVMAQLVMCTMZJOFTSZWFKCIBKAIZSERPRJJUITVSUAXXWPTMPXMIEXMHYYUWUNJVRUYYBKAFILKVIIQOXFVAQCYDRVVJDXOCWIGAURTBZFWQLIBSLQYTDBIVUAKTQTMCRDFBXQAXZCBXZFGPCXDONESARFSFMIGVSWVYCTNTLTWSJTOFPIAZKJRVCIUSDMJNGEFOJCCCWTHFFDSPPDNUURKMZSMNVFTEQAWZEETPMFMCMXQNTGSZNVSPLPONFFNZPGOYRROJGEZJXNNYEGLGOZCTYDLJOEGXIJYYHCJASPSAURXKEBDZQYFTBMKFFIFZNQRLSGAKGATYBDUODENEMMZIHRFVGJFBOXMYCCWTBLYOIKPLCZENQUPTYXMFDYFQCBQAOHFFRYXNLZGYQTKRFZIGISDTZWJOGULTDAPKPPVVROLBJOTJIBNHLTOKXRBVKRRWWYZQPRTGPFLPLUTXIACAGEKAGGOKTMNAKPDUWXMTHRMZFNQFGBABZWJQZLNNKSLSBTLLPEPLROUKRLZSTYPXRATXBTBTEHPSKYBSREZJUDGWBRKOGRKKVZWKZYPKKRIZGKXGSAKQNNLMMVTWRVBKTXCLINPJEPYETEILPCSURXBDXQDCLUBQARNEUKSXFSVZFEHXWDFCKBRZUSAHSZLELKUJECTPXONMDJUCGLPMJSQAMLKNZTDSYKGYUNBOEDCVFPCIIREHLJBDYCJQIDCGJBCBMWQXAWHMMUHQLCZLTYOKMLXUGIKTFRXLCOUTOGSEYOVGKOQUGWFOTIGVEBXKKFQJWDUXYQNCOURCTTKLNOISKFQUWYZSJRZACOPZPUMBRNPHNXFUZJIUINFNIEIZGCZMSVPSVKCETRXOZTPLSMXTRFQAMGYPCXQPXMSNWWIDRYLYCEQEEHLSJWROZGBYISYWAZLWGUUBADVICIHRDWVXVXPLWJBUHXLLMQEQWOVUIHLDMCWWDNQZXOEFBMVTCQIGUSBSEJCPHCMWDGTVIOIMQAWSRWZXCWJYASILKHEGNKMJTZFGJYJGKXIHFBFUWYKBFOLBONRMWLRNSSCAGXXBQTVIJMIJTOERXPMUWIMPABZHHHNDICRRJULEAZIJKRJDXBXWLLQKPXVVRVBKNFVTMRFORWITIQUMGHKPDFIYJTNDLWNTMOXTWKWDJEKPGUBFPUTSSASAFEJEOZJMMBOPAVAFCYCDEUBEOWWFUEYKFEATRJBKNWXHZOCZIDXFWVGJKPMSMPZSHYHFHDOQAJTXEIEENFIHKHQEGYBZSVKFNRFMIXRHWDWEZYQGGCMDQYIRLJXABUEBVTGEVFODLRMVHFZRQMODGRFPOJOKQKVOESUVVAWRQZFHZUMVZUDDPNUUIHHEBKPTTFGZQXWBYTMZRRBOXSRJXTHVHHYSNLVASRZNMIQNGYHVTSSJNSEMERCNNCSHRDKUWOCGHGIIYBDTNRLNMYWKHHBVCOPASRMGJXDYTOSRZNBNAQJIQKMEQXOEGUBBBZGBCLTWTYICMHFQOUJEBJXWWFAHYFVCMHNLHGYVVZUHVOCTYRNCPQPSIYDLYENYBYFFJJQGXJONTKONMIMHKULHILIJTKUMWEDMLSRMQRKQARMLKRQLZQWFBWHKUOWZMOCTRFVGMHBMZLVVNCKFPWOAAUIKGASQHRMQEWXWAFRJLXRSSDWFRNOCUPCODHPSKLHQTQOKITMVNCOFZZAQJYASLWHOCCBCKUCYZDZSGURXBFDISLISXJACLXIOCFFYYOLTZVISOHKZVYQJSRRFEURDKVPNK",
     };
 
-    {
-        const table_columns = [_]muscle.Column{
-            muscle.Column{
-                .name = "pk",
-                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
-            },
-            .{
-                .name = "int",
-                .data_type = muscle.DataType{ .int = {} },
-            },
-            .{
-                .name = "real",
-                .data_type = muscle.DataType{ .real = {} },
-            },
-        };
-        const create_table_query: Query = Query{ .create_table = .{
-            .table_name = table_name,
-            .columns = &table_columns,
-            .primary_key_column_index = 0,
-        } };
-        _ = try db.execute_query(create_table_query, arena.allocator());
-    }
+    _ = try db.execute("create table stress_test(pk TEXT(2023) PRIMARY KEY, integer INT, float REAL)", arena.allocator());
 
     const rand = std.crypto.random;
     for (insert_keys) |str| {
@@ -279,11 +241,11 @@ test "regression test 1" {
                 .value = .{ .txt = str },
             },
             .{
-                .column_name = "int",
+                .column_name = "integer",
                 .value = .{ .int = rand.int(i64) },
             },
             .{
-                .column_name = "real",
+                .column_name = "float",
                 .value = .{ .real = rand.float(f64) },
             },
         } } };
@@ -301,7 +263,7 @@ test "regression test 1" {
 }
 
 // tests previous bug wrt divider keys
-test "regressoion test 2" {
+test "regression test 2" {
     var file = try helpers.get_temp_file_path("test_stress_random_operations");
     defer file.deinit();
 
@@ -332,28 +294,7 @@ test "regressoion test 2" {
         "SKGGMXEMOQCFQDTWOEAUYZSPNSERSFVFJJWTVOLIHBKMBCQIMJCXVEXFXXJFOGNQRVZJJZRFVPCUEZGKMBLYVKNPBYNFDNHXSDHATECQSTBJGZQMJWYPILKMFZZPACIFCQXQWNQTVCIANSVZDXUXAEHIYMKARGMLBPPWYXSCFZKTCHMOHCITRKYTTGIRJHKECAPKUDVXHHSEZOJAUCRDTVBMDXURPVMYDHRJZZZIVBFHJAUZFMXDUQSJQTNPUPZKHTSHNRGSOMWWXPBHBSTUSWSKPPNTBNEBQXEYUMGZCNZONVSFOIZZBIRRRVXEOLVKRYSLIXMSNHHMFFRUMGJVAEFIZHXLQEDGQNQCYNIYXAEDFLKNKSFIGIDMAOYGUQESWQJTLZIBWHIIEYPKJWANSJHEXSYESJNBKFZQIEVXSWMBMRSUMJVSCUMUIAXXSUNQOIQIDFUSNLELATPYNIOMBQVGESVLRGMWHPJAHCSDMNBUAVXQWRFGQAPGHAXYPLZRWVTOFSSKVHCDUSXETQWAANNBEFUVWFKNRBSYVRQSLWJWSCAFRUYONNBELSMRVECUKUPVRGSCPPTEJLSOWXDRAKFZCNBPXLSFGUTMBKHOCBOMNJYMMGLZTNQODOULGLLRQKSHPEDONIKNZXNWSWCISEBGIIHCTIYOGDEBIZFNSADRPXMROVBMOPTMMBKEYSZUCHAOVTSQSBWYNAMUSKHENZXRTJAFZPTJNIYOJHAWQCAGUKTIULDZSIVUPQQNTXJUZATEOKKXBONTKWQVLMVDYPTRCZXGJFWBZBDMIRCDTMFMNCQFPYCOHVXYPSOKRERZWOFWESJPSKOBHAANATKDYQMPAESMOVXDWFGRNFGTPUFHVJMLXKGRGRKBAFRFUPCUYYUSXBBIXNYRBCWPRLFNOLHGNTSFDPTOVPBQKSBPVBRDWQRWMYUAYMCQNQFRMMXNAIEIDSHZJPXIZNMXIIBSJBXTMDALVIISZEPEHAEBQOTYVJNXBDCBGNXFLRSZCDYMHMTVULSUHSBGLADBONVONFGLNEHJDVMEBQEYWASEDTVPPYWXLROUAWADWBUIFOWIWTUZXTZPQJELSFORSRSEXYBWRFOGNQLXWLAPTJSOVUWHJJNGNGHYWRARKIKDAGQZRDRONRPVQMFOSVKKAJYKMBGZCPDBHPFNZVBQGGGJQPRNTIQFDDFVELMVZGNCWQZWBLRIJRXKUZCZUMTSFETWTAAEQZGKTGSDDCZQAWOUTPDJXOPFYCNDLMDAZIYVTQDNCQBSKARSBCMMHKZCIPLURJCQVIJARDJOVEYCXLOFVDMATZXVEFGAUKRNCWMIHLSSKKDKSUKLZDQOTPHSULBQIFQGPFUAQWBOAKLQSLZNXYGQTHJRYIGEJPNOMAFCLRQQDTGJHUNRPBPJWECIJJMCWODVOYLKXQDUYBIQCVYTYRFHVSBEEJUKLGORNCVKSAMTFDVCCARHCSZQZXWJRMRUFPEJERMWFJPUULAAHXLILRIIQUFKYGKTSKRFBORGECWLNYNAQKCLPGEVEMTBKNZQUERTILTYRPJZXMDWERUIITLUVNJYBBGIWGHVJBVAANGZKHLDBTYMTJJSEEPZPKSPWAHAIPFCNMEXTWYZOLIWIGLOVBKJTMKRINMZEIPCGUVTXFVEWEYNZEFPVXOXIIYJPVTWJABYXJMQBFYBUQDSPLTUCMSJKENWUBCRYXFDVNJYSXSDVKSEWQZHKLDCPILSHLLMHBWOUBRQZDLHQZQVRSXGBDKLHIENUQJITXZRFZQHWNSQEOLFUKRYNZDSPFVGUYHHEXJRCJOWFUFSHQVWHJVZYGNJRQHUBULVFCIDHIRLDWSGKOVSNFDSCCRULMHXLGGXGAAXZFGPFLZNPCALEHIOZAQPCXVYGSKRZJTGKRICYRHFNVVXZXMONKMZLWIYYHNEPRMQHEFQLEMQKVCBEVEWJHZZDYZJGXCUAWXIIFYHJDUUDSWLYQCAAALSBXGLEZPRJNFHBTUTFCLZHCL",
     };
 
-    {
-        const table_columns = [_]muscle.Column{
-            muscle.Column{
-                .name = "pk",
-                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
-            },
-            .{
-                .name = "int",
-                .data_type = muscle.DataType{ .int = {} },
-            },
-            .{
-                .name = "real",
-                .data_type = muscle.DataType{ .real = {} },
-            },
-        };
-        const create_table_query: Query = Query{ .create_table = .{
-            .table_name = table_name,
-            .columns = &table_columns,
-            .primary_key_column_index = 0,
-        } };
-        _ = try db.execute_query(create_table_query, arena.allocator());
-    }
+    _ = try db.execute("create table stress_test(pk TEXT(2023) PRIMARY KEY, integer INT, float REAL)", arena.allocator());
 
     const rand = std.crypto.random;
     for (insert_keys) |str| {
@@ -363,11 +304,11 @@ test "regressoion test 2" {
                 .value = .{ .txt = str },
             },
             .{
-                .column_name = "int",
+                .column_name = "integer",
                 .value = .{ .int = rand.int(i64) },
             },
             .{
-                .column_name = "real",
+                .column_name = "float",
                 .value = .{ .real = rand.float(f64) },
             },
         } } };
@@ -380,147 +321,6 @@ test "regressoion test 2" {
         //metadata.data.select_table_info .print();
         try validate_btree(&metadata.data.select_table_info);
     }
-
-    std.debug.print("Test success\n", .{});
-}
-
-test "stress test randomized inserts on 1000 entries" {
-    var file = try helpers.get_temp_file_path("test_stress_random_operations");
-    defer file.deinit();
-
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    var db = try Muscle.init(allocator, file.file_path);
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-
-    defer {
-        arena.deinit();
-        db.deinit();
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
-    }
-
-    const table_name = "stress_test";
-
-    // Create table with larger text capacity
-    {
-        const table_columns = [_]muscle.Column{
-            muscle.Column{
-                .name = "pk",
-                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
-            },
-            .{
-                .name = "int",
-                .data_type = muscle.DataType{ .int = {} },
-            },
-            .{
-                .name = "real",
-                .data_type = muscle.DataType{ .real = {} },
-            },
-        };
-        const create_table_query: Query = Query{ .create_table = .{
-            .table_name = table_name,
-            .columns = &table_columns,
-            .primary_key_column_index = 0,
-        } };
-        _ = try db.execute_query(create_table_query, arena.allocator());
-    }
-
-    const get_insert_query = struct {
-        fn f(pk: []const u8) Query {
-            const rand = std.crypto.random;
-            return Query{ .insert = .{ .table_name = table_name, .values = &.{
-                .{
-                    .column_name = "pk",
-                    .value = .{ .txt = pk },
-                },
-                .{
-                    .column_name = "int",
-                    .value = .{ .int = rand.int(i64) },
-                },
-                .{
-                    .column_name = "real",
-                    .value = .{ .real = rand.float(f64) },
-                },
-            } } };
-        }
-    }.f;
-
-    const rand = std.crypto.random;
-    const select_metadata_query = Query{
-        .select_table_info = .{ .table_name = table_name },
-    };
-
-    var inserted_keys = std.ArrayList([2023]u8){};
-    defer inserted_keys.deinit(allocator);
-
-    var successful_inserts: usize = 0;
-    var total_attempts: usize = 0;
-
-    while (successful_inserts < 1000) {
-        var key: [2023]u8 = undefined;
-        for (&key) |*char| {
-            char.* = 'A' + rand.uintLessThan(u8, 26);
-        }
-
-        total_attempts += 1;
-
-        // Check if key exists
-        var exists = false;
-        for (inserted_keys.items) |existing_key| {
-            if (std.mem.eql(u8, &existing_key, &key)) {
-                exists = true;
-                break;
-            }
-        }
-
-        const insert_response = try db.execute_query(get_insert_query(&key), arena.allocator());
-
-        if (exists) {
-            assert(insert_response.is_error_result());
-            assert(insert_response.err.code == error.DuplicateKey);
-            // Don't count this towards successful inserts
-        } else {
-            // This should be a successful insert
-            assert(!insert_response.is_error_result());
-            try inserted_keys.append(allocator, key);
-            successful_inserts += 1;
-
-            // Validate every 100 successful insertions
-            if (successful_inserts % 100 == 0) {
-                var metadata = try db.execute_query(select_metadata_query, arena.allocator());
-                try validate_btree(&metadata.data.select_table_info);
-                std.debug.print("Validated at {} successful inserts (attempt {}): Height {}, Leaf cells {}\n", .{
-                    successful_inserts,
-                    total_attempts,
-                    metadata.data.select_table_info.btree_height,
-                    metadata.data.select_table_info.btree_leaf_cells,
-                });
-            }
-        }
-    }
-
-    // Final validation
-    var final_metadata = try db.execute_query(select_metadata_query, arena.allocator());
-    try validate_btree(&final_metadata.data.select_table_info);
-
-    std.debug.print("Test completed successfully!\n", .{});
-    std.debug.print("  Successful inserts: {}\n", .{successful_inserts});
-    std.debug.print("  Total attempts: {}\n", .{total_attempts});
-    std.debug.print("  Duplicate attempts: {}\n", .{total_attempts - successful_inserts});
-    std.debug.print("  Final tree height: {}\n", .{final_metadata.data.select_table_info.btree_height});
-    std.debug.print("  Final leaf cells: {}\n", .{final_metadata.data.select_table_info.btree_leaf_cells});
-
-    //var arena = std.heap.ArenaAllocator.init(allocator);
-    //const select_query = Query{
-    //    .Select = .{
-    //        .table_name = table_name,
-    //        .allocator = arena.allocator(),
-    //    },
-    //};
-    //_ = try db.execute_query(select_query, arena.allocator());
-    //arena.deinit();
 
     std.debug.print("Test success\n", .{});
 }
@@ -544,33 +344,7 @@ test "stress test randomized operations on larger dataset" {
 
     const table_name = "large_stress_test";
 
-    // Create table with larger text capacity
-    {
-        const table_columns = [_]muscle.Column{
-            muscle.Column{
-                .name = "pk",
-                .data_type = muscle.DataType{ .txt = 2023 }, // Longer keys
-            },
-            .{
-                .name = "int_val",
-                .data_type = muscle.DataType{ .int = {} },
-            },
-            .{
-                .name = "real_val",
-                .data_type = muscle.DataType{ .real = {} },
-            },
-            .{
-                .name = "text_val",
-                .data_type = muscle.DataType{ .txt = 500 },
-            },
-        };
-        const create_table_query: Query = Query{ .create_table = .{
-            .table_name = table_name,
-            .columns = &table_columns,
-            .primary_key_column_index = 0,
-        } };
-        _ = try db.execute_query(create_table_query, arena.allocator());
-    }
+    _ = try db.execute("create table large_stress_test (pk TEXT(2023) PRIMARY KEY, int_val INT, real_val REAL, text_val TEXT(500))", arena.allocator());
 
     const get_insert_query = struct {
         fn f(pk: []const u8, int_val: i64, real_val: f64, text_val: []const u8) Query {
