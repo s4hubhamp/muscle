@@ -47,7 +47,7 @@ const JournalMetadataPage = extern struct {
     }
 };
 
-pub fn init(database_file_path: []const u8) !Journal {
+pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Journal {
     var journal_file_path = [_]u8{0} ** 128;
 
     for (database_file_path, 0..) |char, index| journal_file_path[index] = char;
@@ -56,7 +56,7 @@ pub fn init(database_file_path: []const u8) !Journal {
 
     // in posix path should not be null terminated
     print("Opening Journal file.\n", .{});
-    var io = try IO.init(journal_file_path[0 .. database_file_path.len + JOURNAL_FILE_EXTENSION.len]);
+    var io = try IO.init(allocator, journal_file_path[0 .. database_file_path.len + JOURNAL_FILE_EXTENSION.len]);
 
     // load metadata
     var metadata: JournalMetadataPage = undefined;
@@ -181,5 +181,5 @@ pub fn persist(self: *Journal) !void {
 pub fn clear(self: *Journal) !void {
     self.entries.clear();
     self.metadata = JournalMetadataPage.init();
-    try self.io.truncate(null);
+    try self.io.truncate(0);
 }

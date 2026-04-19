@@ -12,7 +12,7 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     var file = try helpers.get_temp_file_path("test_tree_operations");
     defer file.deinit();
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
     var db = try Muscle.init(allocator, file.file_path);
 
@@ -39,7 +39,7 @@ test "test tree operations on text primary key. Every leaf node can hold max one
                 },
                 .{
                     .column_name = "datetime",
-                    .value = .{ .int = @intCast(std.time.nanoTimestamp()) },
+                    .value = .{ .int = @intCast(std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds) },
                 },
             } } };
         }
@@ -205,7 +205,7 @@ test "regression test 1" {
     var file = try helpers.get_temp_file_path("test_stress_random_operations");
     defer file.deinit();
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
     var db = try Muscle.init(allocator, file.file_path);
 
@@ -233,7 +233,8 @@ test "regression test 1" {
 
     _ = try db.execute("create table stress_test(pk TEXT(2023) PRIMARY KEY, integer INT, float REAL)", arena.allocator());
 
-    const rand = std.crypto.random;
+    const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
+    const rng = rng_impl.interface();
     for (insert_keys) |str| {
         const insert_query = Query{ .insert = .{ .table_name = table_name, .values = &.{
             .{
@@ -242,11 +243,11 @@ test "regression test 1" {
             },
             .{
                 .column_name = "integer",
-                .value = .{ .int = rand.int(i64) },
+                .value = .{ .int = rng.int(i64) },
             },
             .{
                 .column_name = "float",
-                .value = .{ .real = rand.float(f64) },
+                .value = .{ .real = rng.float(f64) },
             },
         } } };
 
@@ -267,7 +268,7 @@ test "regression test 2" {
     var file = try helpers.get_temp_file_path("test_stress_random_operations");
     defer file.deinit();
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
     var db = try Muscle.init(allocator, file.file_path);
 
@@ -296,7 +297,8 @@ test "regression test 2" {
 
     _ = try db.execute("create table stress_test(pk TEXT(2023) PRIMARY KEY, integer INT, float REAL)", arena.allocator());
 
-    const rand = std.crypto.random;
+    const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
+    const rng = rng_impl.interface();
     for (insert_keys) |str| {
         const insert_query = Query{ .insert = .{ .table_name = table_name, .values = &.{
             .{
@@ -305,11 +307,11 @@ test "regression test 2" {
             },
             .{
                 .column_name = "integer",
-                .value = .{ .int = rand.int(i64) },
+                .value = .{ .int = rng.int(i64) },
             },
             .{
                 .column_name = "float",
-                .value = .{ .real = rand.float(f64) },
+                .value = .{ .real = rng.float(f64) },
             },
         } } };
 
@@ -329,7 +331,7 @@ test "stress test randomized operations on larger dataset" {
     var file = try helpers.get_temp_file_path("test_stress_random_operations_large");
     defer file.deinit();
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
     var db = try Muscle.init(allocator, file.file_path);
 
@@ -369,13 +371,14 @@ test "stress test randomized operations on larger dataset" {
         }
     }.f;
 
-    const rand = std.crypto.random;
+    const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
+    const rng = rng_impl.interface();
     var delete_query: Query = Query{ .delete = .{ .table_name = table_name, .key = undefined } };
     const select_metadata_query = Query{
         .select_table_info = .{ .table_name = table_name },
     };
 
-    var inserted_keys = std.ArrayList([2023]u8){};
+    var inserted_keys = std.ArrayList([2023]u8).empty;
     defer inserted_keys.deinit(allocator);
 
     var text_buffer: [500]u8 = undefined;
@@ -385,13 +388,13 @@ test "stress test randomized operations on larger dataset" {
     for (0..2000) |i| {
         var key: [2023]u8 = undefined;
         for (&key) |*char| {
-            char.* = 'A' + rand.uintLessThan(u8, 26);
+            char.* = 'A' + rng.uintLessThan(u8, 26);
         }
 
         // Generate random text value
-        const text_len = rand.uintLessThan(usize, 400) + 100; // 100-499 chars
+        const text_len = rng.uintLessThan(usize, 400) + 100; // 100-499 chars
         for (text_buffer[0..text_len]) |*char| {
-            char.* = 'a' + rand.uintLessThan(u8, 26);
+            char.* = 'a' + rng.uintLessThan(u8, 26);
         }
 
         // Check if key exists
@@ -405,8 +408,8 @@ test "stress test randomized operations on larger dataset" {
 
         const insert_response = try db.execute_query(get_insert_query(
             &key,
-            rand.int(i64),
-            rand.float(f64),
+            rng.int(i64),
+            rng.float(f64),
             text_buffer[0..text_len],
         ), arena.allocator());
 
@@ -433,13 +436,13 @@ test "stress test randomized operations on larger dataset" {
     for (0..inserted_keys.items.len) |i| {
         if (inserted_keys.items.len == 0) break;
 
-        const random_index = rand.uintLessThan(usize, inserted_keys.items.len);
+        const random_index = rng.uintLessThan(usize, inserted_keys.items.len);
         const key_to_update = inserted_keys.items[random_index];
 
         // Generate new random values for the update
-        const text_len = rand.uintLessThan(usize, 400) + 100; // 100-499 chars
+        const text_len = rng.uintLessThan(usize, 400) + 100; // 100-499 chars
         for (text_buffer[0..text_len]) |*char| {
-            char.* = 'a' + rand.uintLessThan(u8, 26);
+            char.* = 'a' + rng.uintLessThan(u8, 26);
         }
 
         const update_query = Query{ .update = .{ .table_name = table_name, .values = &.{
@@ -449,11 +452,11 @@ test "stress test randomized operations on larger dataset" {
             },
             .{
                 .column_name = "int_val",
-                .value = .{ .int = rand.int(i64) },
+                .value = .{ .int = rng.int(i64) },
             },
             .{
                 .column_name = "real_val",
-                .value = .{ .real = rand.float(f64) },
+                .value = .{ .real = rng.float(f64) },
             },
             .{
                 .column_name = "text_val",
@@ -483,7 +486,7 @@ test "stress test randomized operations on larger dataset" {
     for (0..delete_count) |i| {
         if (inserted_keys.items.len == 0) break;
 
-        const random_index = rand.uintLessThan(usize, inserted_keys.items.len);
+        const random_index = rng.uintLessThan(usize, inserted_keys.items.len);
         const key_to_delete = inserted_keys.swapRemove(random_index);
 
         delete_query.delete.key = .{ .txt = &key_to_delete };
@@ -506,11 +509,11 @@ test "stress test randomized operations on larger dataset" {
     // Phase 3: Mixed operations (insert/delete randomly)
     std.debug.print("Phase 4: Mixed operations...\n", .{});
     for (0..1000) |i| {
-        const operation = rand.uintLessThan(u8, 3); // 0=insert, 1=delete, 2=insert
+        const operation = rng.uintLessThan(u8, 3); // 0=insert, 1=delete, 2=insert
 
         if (operation == 1 and inserted_keys.items.len > 100) {
             // Delete operation
-            const random_index = rand.uintLessThan(usize, inserted_keys.items.len);
+            const random_index = rng.uintLessThan(usize, inserted_keys.items.len);
             const key_to_delete = inserted_keys.swapRemove(random_index);
 
             delete_query.delete.key = .{ .txt = &key_to_delete };
@@ -520,13 +523,13 @@ test "stress test randomized operations on larger dataset" {
             // Insert operation
             var key: [2023]u8 = undefined;
             for (&key) |*char| {
-                char.* = 'A' + rand.uintLessThan(u8, 26);
+                char.* = 'A' + rng.uintLessThan(u8, 26);
             }
 
             // Generate random text value
-            const text_len = rand.uintLessThan(usize, 400) + 100;
+            const text_len = rng.uintLessThan(usize, 400) + 100;
             for (text_buffer[0..text_len]) |*char| {
-                char.* = 'a' + rand.uintLessThan(u8, 26);
+                char.* = 'a' + rng.uintLessThan(u8, 26);
             }
 
             // Check if key exists
@@ -540,8 +543,8 @@ test "stress test randomized operations on larger dataset" {
 
             const insert_response = try db.execute_query(get_insert_query(
                 &key,
-                rand.int(i64),
-                rand.float(f64),
+                rng.int(i64),
+                rng.float(f64),
                 text_buffer[0..text_len],
             ), arena.allocator());
 
@@ -613,8 +616,6 @@ test "stress test randomized operations on larger dataset" {
 }
 
 fn validate_btree(metadata: *const muscle.query_result.SelectTableMetadataResult) !void {
-    const t = std.time.milliTimestamp();
-
     var allocator = metadata.pages.allocator;
     const L = struct {
         data: struct {
@@ -673,7 +674,7 @@ fn validate_btree(metadata: *const muscle.query_result.SelectTableMetadataResult
         assert(page_meta.cells.items.len > 0);
 
         // need to check that all childrens are unique
-        var child_pages = std.ArrayList(muscle.PageNumber){};
+        var child_pages = std.ArrayList(muscle.PageNumber).empty;
         defer child_pages.deinit(allocator);
 
         // append right child to child_pages
@@ -803,7 +804,4 @@ fn validate_btree(metadata: *const muscle.query_result.SelectTableMetadataResult
             queue.append(&next.node);
         }
     }
-
-    _ = t;
-    //std.debug.print("{}ms VALID\n", .{std.time.milliTimestamp() - t});
 }

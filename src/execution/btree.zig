@@ -36,7 +36,7 @@ const PathDetail = struct {
 };
 
 fn search_internal(self: *const Self, key: []const u8) !std.ArrayList(PathDetail) {
-    var path = std.ArrayList(PathDetail){};
+    var path = std.ArrayList(PathDetail).empty;
     var page_number = self.root_page_number;
     var node = try self.context.pager.get_page(Page, page_number);
 
@@ -114,7 +114,7 @@ pub fn insert(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
     const cell = Cell.init(cell_bytes, null);
 
     switch (leaf_node.search(key, self.primary_key_data_type)) {
-        .found => |_| {
+        .found => {
             return error.DuplicateKey;
         },
         .go_down => |insert_at_slot| {
@@ -166,7 +166,7 @@ pub fn update(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
                 } },
             );
         },
-        .go_down => |_| {
+        .go_down => {
             return error.KeyNotFound;
         },
     }
@@ -202,7 +202,7 @@ pub fn delete(self: *Self, key: []const u8) !void {
                 } },
             );
         },
-        .go_down => |_| {
+        .go_down => {
             return error.KeyNotFound;
         },
     }
@@ -631,7 +631,7 @@ fn modify_leaf_node(
     cell_page_number: muscle.PageNumber,
     cell_slot_index: Page.SlotArrayIndex,
 ) !TreeChangeInfo {
-    var raw_cells = std.ArrayList([]u8){};
+    var raw_cells = std.ArrayList([]u8).empty;
     //defer {
     //    for (raw_cells.items) |slice| {
     //        self.context.arena.free(slice);
@@ -918,7 +918,7 @@ fn modify_internal_node(
     var next_change_info = TreeChangeInfo{
         .sibling_updates = SiblingUpdateInfo{},
     };
-    var raw_cells = std.ArrayList([]u8){};
+    var raw_cells = std.ArrayList([]u8).empty;
     //defer {
     //    for (raw_cells.items) |slice| {
     //        self.context.arena.free(slice);

@@ -570,7 +570,7 @@ pub const Muscle = struct {
 
             for (0..curr_page.num_slots) |slot_index| {
                 const cell = curr_page.cell_at_slot(@intCast(slot_index));
-                var row_bytes = std.ArrayList(u8){};
+                var row_bytes = std.ArrayList(u8).empty;
 
                 print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page_types.Page.SlotArrayEntry) });
                 serial += 1;
@@ -694,7 +694,7 @@ pub const Muscle = struct {
                     .free_space = _page.free_space(),
                     .left = _page.left,
                     .right = _page.right,
-                    .cells = std.ArrayList(SelectTableMetadataResult.DBPageCellMetadata){},
+                    .cells = std.ArrayList(SelectTableMetadataResult.DBPageCellMetadata).empty,
                 };
 
                 for (0.._page.num_slots) |slot| {

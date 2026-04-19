@@ -12,7 +12,7 @@ const TmpFile = struct {
 pub fn get_temp_file_path(file_name: []const u8) !TmpFile {
     var tmp_dir = std.testing.tmpDir(.{});
     // Get temp directory path
-    const temp_dir_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const temp_dir_path = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(temp_dir_path);
 
     // Build database file path

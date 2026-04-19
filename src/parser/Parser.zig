@@ -17,7 +17,7 @@ position: usize,
 pub fn init(context: *muscle.QueryContext) Self {
     return Self{
         .context = context,
-        .statements = std.ArrayList(Statement){},
+        .statements = std.ArrayList(Statement).empty,
         .position = 0,
     };
 }
@@ -181,7 +181,7 @@ fn parse_select(self: *Self) !Statement {
 }
 
 fn parse_select_list(self: *Self) ![]Expression {
-    var columns = std.ArrayList(Expression){};
+    var columns = std.ArrayList(Expression).empty;
 
     var star_is_found = false;
     var expr = try self.parse_expression();
@@ -247,7 +247,7 @@ fn parse_comma_separated_expressions_with_parantheses(self: *Self) ![]Expression
 fn parse_comma_separated_identifiers(self: *Self) ![][]const u8 {
     try self.expect_token(.left_paren);
 
-    var values = std.ArrayList([]const u8){};
+    var values = std.ArrayList([]const u8).empty;
     var seen = std.StringHashMap(void).init(self.context.arena);
     defer seen.deinit();
 
@@ -281,7 +281,7 @@ fn parse_comma_separated(
         try self.expect_token(.left_paren);
     }
 
-    var results = std.ArrayList(Expression){};
+    var results = std.ArrayList(Expression).empty;
     try results.append(self.context.arena, try subparser(self));
     while (try self.consume_optional_token(.comma)) {
         try results.append(self.context.arena, try subparser(self));
@@ -829,7 +829,7 @@ fn parse_update(self: *Self) !Statement {
 
     try self.expect_keyword(.set);
 
-    var assignments = std.ArrayList(Assignment){};
+    var assignments = std.ArrayList(Assignment).empty;
     var seen_columns = std.StringHashMap(void).init(self.context.arena);
 
     // Parse first assignment
@@ -883,7 +883,7 @@ fn parse_create_table(self: *Self) !Statement {
 
     try self.expect_token(.left_paren);
 
-    var columns = std.ArrayList(muscle.Column){};
+    var columns = std.ArrayList(muscle.Column).empty;
     var seen_columns = std.StringHashMap(void).init(self.context.arena);
     var primary_key_column_index: ?usize = null;
 

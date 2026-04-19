@@ -33,7 +33,7 @@ journal: Journal,
 
 pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageManager {
     print("Opening Database file.\n", .{});
-    var io = try IO.init(database_file_path);
+    var io = try IO.init(allocator, database_file_path);
     // try to read metadata page
     // if we can't read metadata page that means it does not exists (we need to create new metadata page)
     var metadata_buffer = [_]u8{0} ** PAGE_SIZE;
@@ -60,7 +60,7 @@ pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageM
         .io = io,
         .dirty_pages = dirty_pages,
         .cache = cache,
-        .journal = try Journal.init(database_file_path),
+        .journal = try Journal.init(allocator, database_file_path),
     };
 }
 

@@ -11,20 +11,16 @@ pub fn serialize_page(page_struct: anytype) ![muscle.PAGE_SIZE]u8 {
     }
 
     var buffer: [muscle.PAGE_SIZE]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
-    var writer = stream.writer();
-
-    try writer.writeStructEndian(page_struct, .little);
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try writer.writeStruct(page_struct, .little);
     return buffer;
 }
 
 pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
     assert(buffer.len == muscle.PAGE_SIZE);
 
-    var stream = std.io.fixedBufferStream(buffer);
-    var reader = stream.reader();
-    const page_struct = try reader.readStructEndian(T, .little);
-    return page_struct;
+    var reader: std.Io.Reader = .fixed(buffer);
+    return try reader.takeStruct(T, .little);
 }
 
 pub fn serailize_value(buffer: *muscle.common.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
