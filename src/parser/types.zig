@@ -98,7 +98,7 @@ pub const CreateTable = struct {
     primary_key_column_index: ?usize,
 };
 
-const Select = struct {
+pub const Select = struct {
     columns: []Expression,
     table: []const u8,
     where: ?Expression,

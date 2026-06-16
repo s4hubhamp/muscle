@@ -5,10 +5,12 @@ pub const common = @import("common.zig");
 pub const PageManager = @import("storage/PageManager.zig");
 pub const page_types = @import("storage/page_types.zig");
 pub const BTree = @import("execution/BTree.zig");
+pub const Cursor = @import("execution/Cursor.zig");
 pub const QueryContext = @import("QueryContext.zig");
 pub const query_result = @import("query_result.zig");
 pub const Catalog_Manager = @import("catalog/CatalogManager.zig");
 pub const Parser = @import("parser/Parser.zig");
+//pub const Planner = @import("planner.zig");
 pub const analyzer = @import("analyzer.zig");
 
 pub const Table = struct {
@@ -16,28 +18,40 @@ pub const Table = struct {
     root: u32,
     // table name
     name: []const u8,
-    columns: []Column,
+    // columns keyed by name for lookup
+    columns: std.array_hash_map.String(Column),
+    // primary key column name
+    primary_key: []const u8,
     // index is outside column because we may have compound indexes
     indexes: []Index,
 
-    pub fn clone(self: Table, allocator: std.mem.Allocator) !Table {
-        var cloned = self;
-        var columns_array = try std.ArrayList(Column).initCapacity(allocator, self.columns.len);
+    pub fn clone(self: *const @This(), allocator: std.mem.Allocator) !Table {
+        var copy = Table{
+            .name = try allocator.dupe(u8, self.name),
+            .primary_key = try allocator.dupe(u8, self.primary_key),
+            .root = self.root,
+            .columns = .empty,
+            .indexes = &.{},
+        };
+
+        for (self.columns.values()) |col| {
+            const column_copy = try col.clone(allocator);
+            try copy.columns.put(allocator, column_copy.name, column_copy);
+        }
+
         var indexes_array = try std.ArrayList(Index).initCapacity(allocator, self.indexes.len);
+        for (self.indexes) |idx| {
+            try indexes_array.append(allocator, try idx.clone(allocator));
+        }
+        copy.indexes = try indexes_array.toOwnedSlice(allocator);
 
-        for (self.columns) |col| try columns_array.append(allocator, try col.clone(allocator));
-        for (self.indexes) |idx| try indexes_array.append(allocator, try idx.clone(allocator));
-
-        cloned.name = try allocator.dupe(u8, self.name);
-        cloned.columns = try columns_array.toOwnedSlice(allocator);
-        cloned.indexes = try indexes_array.toOwnedSlice(allocator);
-
-        return cloned;
+        return copy;
     }
 
-    pub fn deinit(self: Table, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Table, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
-        for (self.columns) |*col| {
+        allocator.free(self.primary_key);
+        for (self.columns.values()) |*col| {
             allocator.free(col.name);
             switch (col.default) {
                 .literal => |val| {
@@ -49,21 +63,12 @@ pub const Table = struct {
                 else => {},
             }
         }
-        allocator.free(self.columns);
-
+        self.columns.deinit(allocator);
         for (self.indexes) |*index| {
             allocator.free(index.name);
             allocator.free(index.column_name);
         }
         allocator.free(self.indexes);
-    }
-
-    pub fn find_column(self: *const Table, name: []const u8) ?*const Column {
-        for (self.columns) |*col| {
-            if (std.mem.eql(u8, col.name, name)) return col;
-        }
-
-        return null;
     }
 };
 
@@ -78,7 +83,7 @@ pub const Column = struct {
     // curr max value of int column used in auto_increment
     max_int_value: i64 = 0,
 
-    fn clone(self: *const Column, allocator: std.mem.Allocator) !Column {
+    pub fn clone(self: *const Column, allocator: std.mem.Allocator) !Column {
         var cloned = self.*;
         cloned.name = try allocator.dupe(u8, self.name);
         cloned.default = try self.default.clone(allocator);
@@ -140,7 +145,7 @@ pub const Index = struct {
     column_name: []const u8,
     is_unique: bool,
 
-    fn clone(self: Index, allocator: std.mem.Allocator) !Index {
+    pub fn clone(self: Index, allocator: std.mem.Allocator) !Index {
         var cloned = self;
         cloned.name = try allocator.dupe(u8, self.name);
         cloned.column_name = try allocator.dupe(u8, self.column_name);

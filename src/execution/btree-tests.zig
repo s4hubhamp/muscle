@@ -18,14 +18,6 @@ test "test tree operations on text primary key. Every leaf node can hold max one
 
     var arena = std.heap.ArenaAllocator.init(allocator);
 
-    defer {
-        arena.deinit();
-        db.deinit();
-        const deinit_status = gpa.deinit();
-        //fail test; can't try in defer as defer is executed after we return
-        if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
-    }
-
     const table_name = "devices";
 
     _ = try db.execute("create table devices (pk TEXT(2023) PRIMARY KEY, datetime INT)", arena.allocator());
@@ -198,6 +190,13 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     // 2.            (6)[AAAA..]                                (?[CCCCC..]
     // 3. (4)[AAAAAA..]         (5)[BBBBB..]        (7)[CCCCC..]    (?)[DDDDD..]
 
+    arena.deinit();
+    db.deinit();
+    const deinit_status = gpa.deinit();
+    if (deinit_status == .leak) {
+        std.debug.print("LEAK DETECTED\n", .{});
+        try std.testing.expect(false);
+    }
 }
 
 // tests previous bug wrt setting left and right pointers after new page creation
@@ -210,13 +209,6 @@ test "regression test 1" {
     var db = try Muscle.init(allocator, file.file_path);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
-
-    defer {
-        arena.deinit();
-        db.deinit();
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
-    }
 
     const table_name = "stress_test";
     const select_metadata_query = Query{
@@ -260,7 +252,13 @@ test "regression test 1" {
         try validate_btree(&metadata.data.select_table_info);
     }
 
-    std.debug.print("Test success\n", .{});
+    arena.deinit();
+    db.deinit();
+    const deinit_status = gpa.deinit();
+    if (deinit_status == .leak) {
+        std.debug.print("LEAK DETECTED\n", .{});
+        try std.testing.expect(false);
+    }
 }
 
 // tests previous bug wrt divider keys
@@ -273,13 +271,6 @@ test "regression test 2" {
     var db = try Muscle.init(allocator, file.file_path);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
-
-    defer {
-        arena.deinit();
-        db.deinit();
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
-    }
 
     const table_name = "stress_test";
     const select_metadata_query = Query{
@@ -324,6 +315,14 @@ test "regression test 2" {
         try validate_btree(&metadata.data.select_table_info);
     }
 
+    arena.deinit();
+    db.deinit();
+    const deinit_status = gpa.deinit();
+    if (deinit_status == .leak) {
+        std.debug.print("LEAK DETECTED\n", .{});
+        try std.testing.expect(false);
+    }
+
     std.debug.print("Test success\n", .{});
 }
 
@@ -336,13 +335,6 @@ test "stress test randomized operations on larger dataset" {
     var db = try Muscle.init(allocator, file.file_path);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
-
-    defer {
-        arena.deinit();
-        db.deinit();
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leak while deiniting");
-    }
 
     const table_name = "large_stress_test";
 
@@ -379,8 +371,6 @@ test "stress test randomized operations on larger dataset" {
     };
 
     var inserted_keys = std.ArrayList([2023]u8).empty;
-    defer inserted_keys.deinit(allocator);
-
     var text_buffer: [500]u8 = undefined;
 
     // Phase 1: Insert 2000 random entries
@@ -417,7 +407,7 @@ test "stress test randomized operations on larger dataset" {
             assert(insert_response.is_error_result());
             assert(insert_response.err.code == error.DuplicateKey);
         } else {
-            try inserted_keys.append(allocator, key);
+            try inserted_keys.append(arena.allocator(), key);
 
             // Validate every 100 insertions
             if (i % 100 == 0) {
@@ -552,7 +542,7 @@ test "stress test randomized operations on larger dataset" {
                 assert(insert_response.is_error_result());
                 assert(insert_response.err.code == error.DuplicateKey);
             } else {
-                try inserted_keys.append(allocator, key);
+                try inserted_keys.append(arena.allocator(), key);
             }
         }
 
@@ -590,7 +580,7 @@ test "stress test randomized operations on larger dataset" {
         ), arena.allocator());
 
         if (!insert_response.is_error_result()) {
-            try inserted_keys.append(allocator, key);
+            try inserted_keys.append(arena.allocator(), key);
         }
 
         // Validate every 50 insertions
@@ -611,6 +601,14 @@ test "stress test randomized operations on larger dataset" {
     std.debug.print("  Leaf pages: {}\n", .{final_metadata.data.select_table_info.btree_leaf_pages});
     std.debug.print("  Internal pages: {}\n", .{final_metadata.data.select_table_info.btree_internal_pages});
     std.debug.print("  Total keys: {}\n", .{inserted_keys.items.len});
+
+    arena.deinit();
+    db.deinit();
+    const deinit_status = gpa.deinit();
+    if (deinit_status == .leak) {
+        std.debug.print("LEAK DETECTED\n", .{});
+        try std.testing.expect(false);
+    }
 
     std.debug.print("Large dataset stress test completed successfully!\n", .{});
 }

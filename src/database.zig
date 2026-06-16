@@ -173,7 +173,13 @@ pub const Muscle = struct {
             return error.DuplicateTableName;
         }
 
-        var columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, payload.columns.len + 1);
+        var new_table = muscle.Table{
+            .root = 0,
+            .name = payload.table,
+            .primary_key = "",
+            .columns = .empty,
+            .indexes = &.{},
+        };
 
         for (payload.columns, 0..) |*column, i| {
             if (column.auto_increment and column.data_type != .int) {
@@ -214,19 +220,18 @@ pub const Muscle = struct {
                     column.max_int_value = 0;
                 }
 
-                // primary key column gets stored at beginning
-                try columns.insert(context.arena, 0, column.*);
-            } else {
-                // @Perf Can we reorder columns for efficient operations?
-                try columns.append(context.arena, column.*);
+                new_table.primary_key = column.name;
             }
+
+            // @Perf Can we reorder columns for efficient operations?
+            try new_table.columns.put(context.arena, column.name, column.*);
         }
 
         // create a default primary key column if not provided
         if (payload.primary_key_column_index == null) {
             const DEFAULT_PRIMARY_KEY_COLUMN_NAME = "Row_Id";
             const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .int;
-            try columns.insert(context.arena, 0, muscle.Column{
+            try new_table.columns.put(context.arena, DEFAULT_PRIMARY_KEY_COLUMN_NAME, muscle.Column{
                 .name = DEFAULT_PRIMARY_KEY_COLUMN_NAME,
                 .data_type = DEFAULT_PRIMARY_KEY_COLUMN_TYPE,
                 .auto_increment = true,
@@ -234,21 +239,15 @@ pub const Muscle = struct {
                 .unique = true,
                 .max_int_value = 0,
             });
+            new_table.primary_key = DEFAULT_PRIMARY_KEY_COLUMN_NAME;
         }
 
         const root_page_number = try context.pager.alloc_free_page(context.catalog.metadata);
         // initialize root page
         const root_page = page_types.Page.init();
         try context.pager.update_page(root_page_number, &root_page);
-
-        const table = muscle.Table{
-            .root = root_page_number,
-            .name = payload.table,
-            .columns = columns.items,
-            .indexes = &.{},
-        };
-
-        try context.catalog.create_table(context.pager, table);
+        new_table.root = root_page_number;
+        try context.catalog.create_table(context.pager, new_table);
     }
 
     fn drop_table(self: *Muscle, context: *QueryContext, payload: DropTablePayload) !void {
@@ -262,10 +261,10 @@ pub const Muscle = struct {
     fn insert(self: *Muscle, context: *QueryContext, payload: InsertPayload) !void {
         _ = self;
 
-        var table: muscle.Table = if (context.catalog.find_table(payload.table_name)) |t|
-            try t.clone(context.arena)
+        const table = try if (context.catalog.find_table(payload.table_name)) |t|
+            t.clone(context.arena)
         else
-            return error.TableNotFound;
+            error.TableNotFound;
 
         const find_value = struct {
             fn f(
@@ -283,7 +282,7 @@ pub const Muscle = struct {
         // check for columns and duplicates
         if (payload.values.len > 1) {
             for (payload.values, 0..) |*v1, i| {
-                if (table.find_column(v1.column_name) == null) return error.ColumnDoesNotExist;
+                if (!table.columns.contains(v1.column_name)) return error.ColumnDoesNotExist;
 
                 for (payload.values[i + 1 ..]) |*v2| {
                     if (std.mem.eql(u8, v1.column_name, v2.column_name))
@@ -300,7 +299,8 @@ pub const Muscle = struct {
         var primary_key_type: muscle.DataType = undefined;
 
         // for each column find value
-        for (table.columns, 0..) |*column, i| {
+        for (table.columns.values()) |*column| {
+            // @Perf iterate over values and call find_column
             const value = find_value(column.name, payload.values);
             var final_value_to_serialize: muscle.Value = .{ .null = {} };
 
@@ -355,8 +355,7 @@ pub const Muscle = struct {
 
             try serde.serailize_value(&buffer, final_value_to_serialize);
 
-            // first column is always the primary key
-            if (i == 0) {
+            if (std.mem.eql(u8, column.name, table.primary_key)) {
                 primary_key_bytes = buffer.const_slice();
                 primary_key_type = column.data_type;
                 if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
@@ -365,7 +364,6 @@ pub const Muscle = struct {
             }
         }
 
-        // Important to initiate BTree everytime OR have correct reference to metadata_page every time
         var btree = BTree.init(context, table.root, primary_key_type);
         try btree.insert(primary_key_bytes, buffer.const_slice());
 
@@ -378,10 +376,10 @@ pub const Muscle = struct {
     fn update(self: *Muscle, context: *QueryContext, payload: UpdatePayload) !void {
         _ = self;
 
-        var table: muscle.Table = if (context.catalog.find_table(payload.table_name)) |t|
-            try t.clone(context.arena)
+        const table = try if (context.catalog.find_table(payload.table_name)) |t|
+            t.clone(context.arena)
         else
-            return error.TableNotFound;
+            error.TableNotFound;
 
         const find_value = struct {
             fn f(
@@ -399,7 +397,7 @@ pub const Muscle = struct {
         // check for duplicate columns and whether columns even exists
         if (payload.values.len > 1) {
             for (payload.values, 0..) |*v1, i| {
-                if (table.find_column(v1.column_name) == null) return error.ColumnDoesNotExist;
+                if (!table.columns.contains(v1.column_name)) return error.ColumnDoesNotExist;
                 for (payload.values[i + 1 ..]) |*v2| {
                     if (std.mem.eql(u8, v1.column_name, v2.column_name)) return error.DuplicateColumns;
                 }
@@ -414,7 +412,7 @@ pub const Muscle = struct {
         var primary_key_type: muscle.DataType = undefined;
 
         // for each column find value
-        for (table.columns, 0..) |*column, i| {
+        for (table.columns.values()) |*column| {
             const value = find_value(column.name, payload.values);
             var final_value_to_serialize: muscle.Value = .{ .null = {} };
 
@@ -470,7 +468,7 @@ pub const Muscle = struct {
             try serde.serailize_value(&buffer, final_value_to_serialize);
 
             // first column is always the primary key
-            if (i == 0) {
+            if (std.mem.eql(u8, table.primary_key, column.name)) {
                 primary_key_bytes = buffer.const_slice();
                 primary_key_type = column.data_type;
                 if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
@@ -479,7 +477,6 @@ pub const Muscle = struct {
             }
         }
 
-        // Important to initiate BTree everytime OR have correct reference to metadata_page every time
         var btree = BTree.init(context, table.root, primary_key_type);
         try btree.update(primary_key_bytes, buffer.const_slice());
 
@@ -496,10 +493,13 @@ pub const Muscle = struct {
     ) !void {
         _ = self;
 
-        const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
+        const table = try if (context.catalog.find_table(payload.table_name)) |t|
+            t.clone(context.arena)
+        else
+            error.TableNotFound;
 
         // right now all deletes are by pk
-        if (@intFromEnum(table.columns[0].data_type) != @intFromEnum(payload.key)) {
+        if (@intFromEnum(table.columns.get(table.primary_key).?.data_type) != @intFromEnum(payload.key)) {
             return error.TypeMismatch;
         }
 
@@ -507,8 +507,7 @@ pub const Muscle = struct {
         var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
         try serde.serailize_value(&buffer, payload.key);
 
-        // Important to initiate BTree everytime OR have correct reference to metadata_page every time
-        var btree = BTree.init(context, table.root, table.columns[0].data_type);
+        var btree = BTree.init(context, table.root, table.columns.get(table.primary_key).?.data_type);
         try btree.delete(buffer.const_slice());
     }
 
@@ -519,9 +518,12 @@ pub const Muscle = struct {
     ) !void {
         _ = self;
 
-        const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
+        const table = try if (context.catalog.find_table(payload.table_name)) |t|
+            t.clone(context.arena)
+        else
+            error.TableNotFound;
 
-        var result_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, if (payload.columns.len > 0) payload.columns.len else table.columns.len);
+        var result_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, if (payload.columns.len > 0) payload.columns.len else table.columns.count());
         var result = query_result.SelectResult{
             .columns = result_columns,
             .rows = try std.ArrayList(std.ArrayList(u8)).initCapacity(
@@ -531,12 +533,14 @@ pub const Muscle = struct {
         };
 
         if (payload.columns.len == 0) {
-            try result_columns.appendSlice(context.arena, table.columns);
+            for (table.columns.values()) |column| {
+                try result_columns.append(context.arena, column);
+            }
         } else {
             // validate selected columns and copy inside the results_columns
             for (payload.columns) |col| {
-                if (table.find_column(col)) |column| {
-                    try result_columns.append(context.arena, column.*);
+                if (table.columns.get(col)) |column| {
+                    try result_columns.append(context.arena, column);
                 } else {
                     return error.ColumnNotFound;
                 }
@@ -655,7 +659,10 @@ pub const Muscle = struct {
         _ = self;
         const SelectTableMetadataResult = query_result.SelectTableMetadataResult;
 
-        const table = context.catalog.find_table(payload.table_name) orelse return error.TableNotFound;
+        const table = try if (context.catalog.find_table(payload.table_name)) |t|
+            t.clone(context.arena)
+        else
+            error.TableNotFound;
 
         // use BFS and insert all the page info inside the hash table
         // also record total cells
@@ -666,16 +673,16 @@ pub const Muscle = struct {
             .btree_internal_cells = 0,
             .btree_leaf_pages = 0,
             .btree_internal_pages = 0,
-            .table_columns = try std.ArrayList(muscle.Column)
-                .initCapacity(context.arena, table.columns.len),
-            .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata)
-                .init(context.arena),
+            .table_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, table.columns.count()),
+            .pages = std.AutoHashMap(muscle.PageNumber, SelectTableMetadataResult.DBPageMetadata).init(context.arena),
         };
 
         // copy columns
-        try result.table_columns.appendSlice(context.arena, table.columns);
+        for (table.columns.values()) |column| {
+            try result.table_columns.append(context.arena, column);
+        }
 
-        const primary_key_data_type = table.columns[0].data_type;
+        const primary_key_data_type = table.columns.get(table.primary_key).?.data_type;
         var first_page_in_level: ?muscle.PageNumber = table.root;
         var curr_page_number: muscle.PageNumber = undefined;
         var curr_page: page_types.Page = undefined;
