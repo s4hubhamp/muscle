@@ -54,6 +54,8 @@ pub fn init(allocator: std.mem.Allocator, pager: *PageManager) !Self {
 
     for (parsed.value) |*t| {
         const cloned = try t.clone(allocator);
+        // Column values move into the table's map; release the staging slice.
+        defer allocator.free(cloned.columns);
         var table = muscle.Table{
             .name = cloned.name,
             .root = cloned.root,

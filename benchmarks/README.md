@@ -1,6 +1,6 @@
 # Query benchmarks
 
-Requires Zig 0.16.0 and macOS (the database currently uses Darwin storage I/O).
+Requires Zig 0.16.0 and macOS or Windows.
 The comparison script uses Python 3 with no additional packages.
 
 ```sh
@@ -38,8 +38,10 @@ arena reset and checksum consumption of returned primary keys. They are not
 isolated B-tree timings. Row counts are checked during each query; every SQL
 statement's expected row count and first/last key are checked before timing.
 
-Each run owns a unique `/tmp/muscle-bench-*` directory, removed after the database
-closes, including on ordinary error returns. No existing database is used.
+Each run owns a unique `muscle-bench-*` temporary directory, removed after the
+database closes, including on ordinary error returns. On Windows the parent is
+`TEMP`, then `TMP`, with the working directory as a fallback. On macOS it is
+`TMPDIR`, falling back to `/tmp`. No existing database is used.
 Three untimed batches precede 15 timed batches per workload. Each sample records
 nanoseconds per query, with a median, minimum, maximum, and observable checksum.
 The same arena retains allocated capacity between queries to bound memory use.

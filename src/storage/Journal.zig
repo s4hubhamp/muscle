@@ -48,15 +48,10 @@ const JournalMetadataPage = extern struct {
 };
 
 pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Journal {
-    var journal_file_path = [_]u8{0} ** 128;
-
-    for (database_file_path, 0..) |char, index| journal_file_path[index] = char;
-    const JOURNAL_FILE_EXTENSION = ".journal";
-    for (JOURNAL_FILE_EXTENSION, database_file_path.len..) |char, index| journal_file_path[index] = char;
-
-    // in posix path should not be null terminated
+    const journal_file_path = try std.mem.concat(allocator, u8, &.{ database_file_path, ".journal" });
+    defer allocator.free(journal_file_path);
     print("Opening Journal file.\n", .{});
-    var io = try IO.init(allocator, journal_file_path[0 .. database_file_path.len + JOURNAL_FILE_EXTENSION.len]);
+    var io = try IO.init(allocator, journal_file_path);
     errdefer io.deinit();
 
     // load metadata

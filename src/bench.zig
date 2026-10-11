@@ -52,11 +52,17 @@ pub fn main(init: std.process.Init) !void {
 
     var random_bytes: [16]u8 = undefined;
     init.io.random(&random_bytes);
-    const directory = try std.fmt.allocPrint(allocator, "/tmp/muscle-bench-{x}", .{std.mem.readInt(u128, &random_bytes, .little)});
-    try std.Io.Dir.cwd().createDir(init.io, directory, .default_dir);
-    defer std.Io.Dir.cwd().deleteTree(init.io, directory) catch |err| {
-        std.debug.print("Failed to remove benchmark directory {s}: {s}\n", .{ directory, @errorName(err) });
+    const temp_root = if (builtin.os.tag == .windows)
+        init.environ_map.get("TEMP") orelse init.environ_map.get("TMP") orelse "."
+    else
+        init.environ_map.get("TMPDIR") orelse "/tmp";
+    const directory_name = try std.fmt.allocPrint(allocator, "muscle-bench-{x}", .{std.mem.readInt(u128, &random_bytes, .little)});
+    const directory_path = try std.fs.path.join(allocator, &.{ temp_root, directory_name });
+    try std.Io.Dir.cwd().createDir(init.io, directory_path, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(init.io, directory_path) catch |err| {
+        std.debug.print("Failed to remove benchmark directory {s}: {s}\n", .{ directory_path, @errorName(err) });
     };
+    const directory = try std.Io.Dir.cwd().realPathFileAlloc(init.io, directory_path, allocator);
     const path = try std.fs.path.join(allocator, &.{ directory, "bench.db" });
     var db = try muscle.database.Muscle.init(init.gpa, path);
     defer db.deinit();
