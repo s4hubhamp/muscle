@@ -65,6 +65,40 @@ pub const DatabaseFixture = struct {
     }
 };
 
+/// Owns a pager independently of the catalog and query execution engine.
+pub const PageManagerFixture = struct {
+    tmp_dir: std.testing.TmpDir,
+    file_path: []const u8,
+    pager: ?muscle.PageManager,
+
+    pub fn init() !*PageManagerFixture {
+        const allocator = std.testing.allocator;
+        const self = try allocator.create(PageManagerFixture);
+        errdefer allocator.destroy(self);
+        self.tmp_dir = std.testing.tmpDir(.{});
+        errdefer self.tmp_dir.cleanup();
+        const directory = try self.tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+        defer allocator.free(directory);
+        self.file_path = try std.fs.path.join(allocator, &.{ directory, "pager.db" });
+        errdefer allocator.free(self.file_path);
+        self.pager = try muscle.PageManager.init(self.file_path, allocator);
+        return self;
+    }
+
+    pub fn reopen(self: *PageManagerFixture) !void {
+        if (self.pager) |*pager| pager.deinit();
+        self.pager = null;
+        self.pager = try muscle.PageManager.init(self.file_path, std.testing.allocator);
+    }
+
+    pub fn deinit(self: *PageManagerFixture) void {
+        if (self.pager) |*pager| pager.deinit();
+        std.testing.allocator.free(self.file_path);
+        self.tmp_dir.cleanup();
+        std.testing.allocator.destroy(self);
+    }
+};
+
 test "DatabaseFixture isolates databases and cleans up temporary files" {
     const file_path = blk: {
         const first = try DatabaseFixture.init();

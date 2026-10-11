@@ -93,6 +93,19 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_mod.addImport("muscle", lib_mod);
+    const bench = b.addExecutable(.{ .name = "muscle-bench", .root_module = bench_mod });
+    const run_bench = b.addRunArtifact(bench);
+    // A benchmark must execute even when its inputs have not changed.
+    run_bench.has_side_effects = true;
+    if (b.args) |args| run_bench.addArgs(args);
+    b.step("bench", "Run query benchmarks (JSON on stdout)").dependOn(&run_bench.step);
+
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
 
     // Creates a step for unit testing. This only builds the test executable

@@ -2,3 +2,5 @@
 .vscode
 .zig-cache
 zig-out
+benchmarks/results/
+benchmarks/__pycache__/

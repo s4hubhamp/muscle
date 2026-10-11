@@ -106,7 +106,8 @@ pub fn batch_get_original_pages(self: *Journal, offset: u32) !struct {
     while (i < metadata.n_pages and j < BATCH_GET_SIZE) {
         const original_page_number = self.metadata.pages[i];
         pages[j].page_number = original_page_number;
-        _ = try self.io.read(original_page_number, &pages[j].page);
+        // Journal page zero is metadata; originals follow in recording order.
+        _ = try self.io.read(i + 1, &pages[j].page);
         i += 1;
         j += 1;
     }

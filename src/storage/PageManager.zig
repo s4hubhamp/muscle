@@ -39,7 +39,7 @@ comptime {
 // It's job is to read and interpret the page by page number
 // It's job is to interpret and write page by page number
 // It maintains list of dirty pages that are not yet written to the disk
-// Depending upon some stratergy it will try to write the pages to database file
+// Depending upon some strategy it will try to write the pages to database file
 const PageManager = @This();
 
 allocator: std.mem.Allocator,
@@ -98,6 +98,8 @@ pub fn commit(self: *PageManager, execution_completed: bool) !void {
     // for update queries even if query did not update any rows, commit is still
     // called by execution engine.
     if (self.dirty_pages.len == 0) {
+        // A partial commit may already have flushed the last dirty page.
+        if (execution_completed) try self.journal.clear();
         print("Nothing to commit.\n", .{});
         return;
     }
@@ -271,4 +273,5 @@ pub fn free(self: *PageManager, metadata: *DBMetadataPage, page_number: PageNumb
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("../testing/page_manager.zig");
 }
