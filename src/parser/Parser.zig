@@ -1,11 +1,10 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
-pub const types = @import("types.zig");
-pub const Expression = types.Expression;
-pub const BinaryOperator = types.BinaryOperator;
-pub const UnaryOperator = types.UnaryOperator;
-pub const Statement = types.Statement;
-pub const Assignment = types.Assignment;
+const Expression = muscle.expression.Expression;
+const BinaryOperator = muscle.expression.BinaryOperator;
+const UnaryOperator = muscle.expression.UnaryOperator;
+const Statement = muscle.statement.Statement;
+const Assignment = muscle.statement.Assignment;
 
 const assert = std.debug.assert;
 const Self = @This();
@@ -142,7 +141,7 @@ fn parse_select(self: *Self) !Statement {
     const columns = try self.parse_select_list();
     var order_by: []Expression = &.{};
     var where_clause: ?Expression = null;
-    var limit: usize = 0;
+    var limit: ?usize = null;
 
     if (columns.len == 0) {
         return error.ParserError;
@@ -215,8 +214,8 @@ fn parse_limit(self: *Self) !usize {
             const num = try parse_num(num_str);
             switch (num.value) {
                 .int => |limit| {
-                    if (limit < 0) {
-                        return self.set_err("{s} value must be non-negative, got {}", .{
+                    if (limit <= 0) {
+                        return self.set_err("{s} value must be greater than 0, got {}", .{
                             self.token_to_string(.{ .keyword = .limit }),
                             limit,
                         });

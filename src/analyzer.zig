@@ -2,10 +2,12 @@ const std = @import("std");
 const muscle = @import("./muscle.zig");
 const Muscle = muscle.database.Muscle;
 
+const Expression = muscle.expression.Expression;
+const Statement = muscle.statement.Statement;
 const helpers = muscle.common.helpers;
 
 // Validate the statements
-pub fn analyze(context: *muscle.QueryContext, statements: []muscle.Parser.Statement) !void {
+pub fn analyze(context: *muscle.QueryContext, statements: []Statement) !void {
     for (statements) |statement| {
         switch (statement) {
             .select => |select| {
@@ -27,11 +29,43 @@ pub fn analyze(context: *muscle.QueryContext, statements: []muscle.Parser.Statem
                 for (insert.columns) |col| try validate_column(context, table, col);
                 try validate_expressions_list(context, table, insert.values);
             },
+            .update => |update| {
+                const table = try validate_table(context, update.table);
+                for (update.assignments) |assignment| {
+                    try validate_column(context, table, assignment.column);
+                    try validate_update_expression(context, table, assignment.value);
+                }
+                if (update.where) |predicate| try validate_update_expression(context, table, predicate);
+            },
             .create_table => {},
             else => {
                 unreachable;
             },
         }
+    }
+}
+
+// UPDATE expressions are evaluated against each original row by the planner.
+// Validate references here without the older INSERT expression type rules.
+fn validate_update_expression(context: *muscle.QueryContext, table: *const muscle.Table, expression: Expression) anyerror!void {
+    switch (expression) {
+        .identifier => |name| try validate_column(context, table, name),
+        .value => {},
+        .binary_operation => |binary| {
+            try validate_update_expression(context, table, binary.left.*);
+            try validate_update_expression(context, table, binary.right.*);
+        },
+        .unary_operation => |unary| try validate_update_expression(context, table, unary.operand.*),
+        .nested => |nested| if (nested) |inner| {
+            try validate_update_expression(context, table, inner.*);
+        } else {
+            try context.set_err(error.AnalyzerError, "Nested expression cannot be empty.", .{});
+            return error.AnalyzerError;
+        },
+        .star => {
+            try context.set_err(error.AnalyzerError, "UPDATE expressions cannot contain '*'.", .{});
+            return error.AnalyzerError;
+        },
     }
 }
 
@@ -48,11 +82,11 @@ fn validate_column(context: *muscle.QueryContext, table: *const muscle.Table, co
     return error.AnalyzerError;
 }
 
-fn validate_expressions_list(context: *muscle.QueryContext, table: *const muscle.Table, expressions: []muscle.Parser.Expression) !void {
+fn validate_expressions_list(context: *muscle.QueryContext, table: *const muscle.Table, expressions: []Expression) !void {
     for (expressions) |*expr| _ = try analyze_expression(context, table, expr);
 }
 
-fn analyze_expression(context: *muscle.QueryContext, table: *const muscle.Table, expression: *const muscle.Parser.Expression) !?muscle.DataType {
+fn analyze_expression(context: *muscle.QueryContext, table: *const muscle.Table, expression: *const Expression) !?muscle.DataType {
     // validate that all identifiers are valid
     // validate left/right in binary are compatible for binary operation
     // validate operand and operator for unary operation

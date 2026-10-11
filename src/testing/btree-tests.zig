@@ -227,7 +227,7 @@ test "regression test 1" {
 
     const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
     const rng = rng_impl.interface();
-    for (insert_keys) |str| {
+    for (insert_keys, 0..) |str, i| {
         const insert_query = Query{ .insert = .{ .table_name = table_name, .values = &.{
             .{
                 .column_name = "pk",
@@ -246,6 +246,8 @@ test "regression test 1" {
         //std.debug.print("Inserting key: {s}\n", .{str});
         _ = try db.execute_query(insert_query, arena.allocator());
         //std.debug.print("insert_result: {any}\n", .{insert_result});
+
+        std.debug.print("arena capacity {} {}\n", .{ i, arena.queryCapacity() });
 
         var metadata = try db.execute_query(select_metadata_query, arena.allocator());
         //metadata.data.select_table_info .print();

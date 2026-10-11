@@ -13,6 +13,8 @@ pub const ConstraintError = error{
     AutoIncrementColumnMustBeInteger,
     BadPrimaryKeyType,
     PrimaryKeyMaxLengthExceeded,
+    PrimaryKeyUpdateNotAllowed,
+    UniqueColumnUpdateNotAllowed,
 };
 
 //pub const ClientError =
@@ -45,6 +47,8 @@ pub const ClientError = error{
     AutoIncrementColumnMustBeInteger,
     BadPrimaryKeyType,
     PrimaryKeyMaxLengthExceeded,
+    PrimaryKeyUpdateNotAllowed,
+    UniqueColumnUpdateNotAllowed,
 
     // Business logic errors
     MaxValueReached,
@@ -75,6 +79,9 @@ pub fn classify_error(err: anyerror) ErrorClassification {
     return switch (err) {
         error.ParserError,
         error.AnalyzerError,
+        error.InvalidExpression,
+        error.IncompatibleTypes,
+        error.DivisionByZero,
 
         error.TableNotFound,
         error.DuplicateTableName,
@@ -90,9 +97,11 @@ pub fn classify_error(err: anyerror) ErrorClassification {
         error.BinaryTooLarge,
         error.RowTooBig,
         error.KeyTooLong,
-        error.AutoIncrementColumnMustBeInteger,
+        error.AutoIncrementConstraintViolation,
         error.BadPrimaryKeyType,
         error.PrimaryKeyMaxLengthExceeded,
+        error.PrimaryKeyUpdateNotAllowed,
+        error.UniqueColumnUpdateNotAllowed,
         error.MaxValueReached,
         error.UniqueConstraintViolation,
         => .client,

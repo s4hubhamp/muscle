@@ -65,35 +65,40 @@ fn search_internal(self: *const Self, key: []const u8) !std.ArrayList(PathDetail
     return path;
 }
 
-pub fn find(self: *Self, key: []const u8) !?[]u8 {
-    var page_number = self.root_page_number;
-    var node = try self.context.pager.get_page(Page, page_number);
+/// Returns an owned copy of the row for a key, or null when it is absent.
+pub fn find(self: *Self, key: []const u8) !?muscle.page_types.EncodedCellContent {
+    var path = try self.search_internal(key);
+    defer path.deinit(self.context.arena);
+    const leaf_page = if (path.pop()) |parent| parent.child else self.root_page_number;
+    const leaf = try self.context.pager.get_page(Page, leaf_page);
+    return switch (leaf.search(key, self.primary_key_data_type)) {
+        .found => |slot| try self.context.arena.dupe(u8, leaf.cell_at_slot(slot).content),
+        .go_down => null,
+    };
+}
 
-    // while we don't reach to leaf node
-    while (!node.is_leaf()) {
-        const search_result = node.search(key, self.primary_key_data_type);
-
-        const child_index = sw: switch (search_result) {
-            .found => |i| {
-                break :sw i;
-            },
-            .go_down => |i| {
-                break :sw i;
-            },
-        };
-
-        page_number = node.child_at_slot(child_index);
-        node = try self.context.pager.get_page(Page, page_number);
+pub fn find_first_leaf(self: *Self) !muscle.PageNumber {
+    var curr = self.root_page_number;
+    while (true) {
+        var curr_page = try self.context.pager.get_page(page_types.Page, curr);
+        if (curr_page.is_leaf()) return curr;
+        curr = curr_page.cell_at_slot(0).left_child;
     }
 
-    switch (node.search(key, self.primary_key_data_type)) {
-        .found => |slot_index| {
-            return try self.context.arena.dupe(u8, node.raw_cell_slice_at_slot(slot_index));
-        },
-        .go_down => {
-            return null;
-        },
-    }
+    unreachable;
+}
+
+/// Locates the first possible row at a lower bound; slot may be past this leaf.
+pub fn seek(self: *Self, key: []const u8, inclusive: bool) !struct { page: muscle.PageNumber, slot: Page.SlotArrayIndex } {
+    var path = try self.search_internal(key);
+    defer path.deinit(self.context.arena);
+    const page = if (path.pop()) |parent| parent.child else self.root_page_number;
+    const leaf = try self.context.pager.get_page(Page, page);
+    const slot = switch (leaf.search(key, self.primary_key_data_type)) {
+        .found => |slot| if (inclusive) slot else slot + 1,
+        .go_down => |slot| slot,
+    };
+    return .{ .page = page, .slot = slot };
 }
 
 pub fn insert(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
@@ -135,6 +140,7 @@ pub fn insert(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
 }
 
 pub fn update(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
+    const cell = Cell.init(cell_bytes, null);
     var path = try self.search_internal(key);
     defer path.deinit(self.context.arena);
 
@@ -149,10 +155,25 @@ pub fn update(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
     }
 
     var leaf_node = try self.context.pager.get_page(Page, target_leaf_page);
-    const cell = Cell.init(cell_bytes, null);
 
     switch (leaf_node.search(key, self.primary_key_data_type)) {
         .found => |update_at_slot| {
+            const new_key = cell.get_keys_slice(false, self.primary_key_data_type);
+            if (serde.compare_serialized_bytes(self.primary_key_data_type, key, new_key) != .eq) {
+                var destination_path = try self.search_internal(new_key);
+                defer destination_path.deinit(self.context.arena);
+                const destination_page = if (destination_path.pop()) |parent| parent.child else self.root_page_number;
+                const destination = try self.context.pager.get_page(Page, destination_page);
+                if (destination.search(new_key, self.primary_key_data_type) == .found) return error.DuplicateKey;
+
+                // Preserve caller-provided slices that may reference pages changed by delete.
+                const saved_key = try self.context.arena.dupe(u8, key);
+                const saved_row = try self.context.arena.dupe(u8, cell_bytes);
+                const saved_cell = Cell.init(saved_row, null);
+                try self.delete(saved_key);
+                try self.insert(saved_cell.get_keys_slice(false, self.primary_key_data_type), saved_row);
+                return;
+            }
             try self.balance(
                 target_leaf_page,
                 leaf_parent_page,
@@ -1224,5 +1245,5 @@ fn split_leaf_root(
 }
 
 test {
-    _ = @import("./btree-tests.zig");
+    _ = @import("../testing/btree-tests.zig");
 }

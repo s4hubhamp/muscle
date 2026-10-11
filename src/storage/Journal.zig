@@ -1,12 +1,12 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
-const constants = @import("constants.zig");
 const IO = @import("io.zig").IO;
 
 const assert = std.debug.assert;
 const print = std.debug.print;
 const PAGE_SIZE = muscle.PAGE_SIZE;
-const MAX_JOURNAL_UNSAVED_ENTRIES = constants.MAX_JOURNAL_UNSAVED_ENTRIES;
+
+pub const MAX_JOURNAL_UNSAVED_ENTRIES = 64;
 
 // Journal stores the original state of pages before update/delete operations
 // If update/delete fails in the middle we can rollback to original state
@@ -57,6 +57,7 @@ pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Journ
     // in posix path should not be null terminated
     print("Opening Journal file.\n", .{});
     var io = try IO.init(allocator, journal_file_path[0 .. database_file_path.len + JOURNAL_FILE_EXTENSION.len]);
+    errdefer io.deinit();
 
     // load metadata
     var metadata: JournalMetadataPage = undefined;

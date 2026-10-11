@@ -23,7 +23,101 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
     return try reader.takeStruct(T, .little);
 }
 
-pub fn serailize_value(buffer: *muscle.common.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
+pub fn deserialize_value(
+    context: *muscle.QueryContext,
+    table: *const muscle.Table,
+    content: muscle.page_types.EncodedCellContent,
+    column_name: []const u8,
+) !muscle.Value {
+    var offset: usize = 0;
+    for (table.columns.values()) |column| {
+        const encoded_len: usize = switch (column.data_type) {
+            .int, .real => @sizeOf(i64),
+            .bool => 1,
+            .txt, .bin => blk: {
+                if (content.len -| offset < @sizeOf(u16)) {
+                    try context.set_err(error.CorruptedData, "Row data is truncated.", .{});
+                    return error.CorruptedData;
+                }
+                const len = std.mem.readInt(
+                    u16,
+                    content[offset..][0..@sizeOf(u16)],
+                    .little,
+                );
+                break :blk @sizeOf(u16) + @as(usize, len);
+            },
+        };
+
+        if (content.len -| offset < encoded_len) {
+            try context.set_err(error.CorruptedData, "Row data is truncated.", .{});
+            return error.CorruptedData;
+        }
+
+        if (std.mem.eql(u8, column.name, column_name)) {
+            return switch (column.data_type) {
+                .int => .{ .int = std.mem.readInt(
+                    i64,
+                    content[offset..][0..@sizeOf(i64)],
+                    .little,
+                ) },
+                .real => .{ .real = @bitCast(std.mem.readInt(
+                    i64,
+                    content[offset..][0..@sizeOf(i64)],
+                    .little,
+                )) },
+                .bool => .{ .bool = content[offset] != 0 },
+                .txt => .{ .txt = content[offset + @sizeOf(u16) .. offset + encoded_len] },
+                .bin => .{ .bin = content[offset + @sizeOf(u16) .. offset + encoded_len] },
+            };
+        }
+
+        offset += encoded_len;
+    }
+    try context.set_err(error.ColumnDoesNotExist, "Referenced column does not exist {s}.", .{column_name});
+    return error.ColumnDoesNotExist;
+}
+
+pub fn serialize(val: muscle.Value, allocator: std.mem.Allocator) ![]u8 {
+    switch (val) {
+        .int => |i| {
+            const tmp = try allocator.alloc(u8, 8);
+            std.mem.writeInt(i64, @ptrCast(tmp), i, .little);
+            return tmp;
+        },
+        .real => |i| {
+            const tmp = try allocator.alloc(u8, 8);
+            std.mem.writeInt(i64, @ptrCast(tmp), @as(i64, @bitCast(i)), .little);
+            return tmp;
+        },
+        .bool => |b| {
+            var tmp = try allocator.alloc(u8, 1);
+            tmp[0] = if (b) 1 else 0;
+            return tmp;
+        },
+        .txt => |str| {
+            const tmp = try allocator.alloc(u8, 2 + str.len);
+            std.mem.writeInt(u16, @ptrCast(tmp), @intCast(str.len), .little);
+            for (tmp[2..], str[0..]) |*ptr, byte| {
+                ptr.* = byte;
+            }
+            return tmp;
+        },
+        .bin => |blob| {
+            const tmp = try allocator.alloc(u8, 2 + blob.len);
+            std.mem.writeInt(u16, @ptrCast(tmp), @intCast(blob.len), .little);
+            for (tmp[2..], blob[0..]) |*ptr, byte| {
+                ptr.* = byte;
+            }
+            return tmp;
+        },
+        .null => {
+            // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example
+            unreachable;
+        },
+    }
+}
+
+pub fn serialize_value(buffer: *muscle.common.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
     switch (val) {
         .int => |i| {
             if (buffer.capacity() - buffer.len < 8) return error.RowTooBig;
@@ -74,35 +168,6 @@ pub fn serailize_value(buffer: *muscle.common.BoundedArray(u8, page_types.Page.C
         },
         .null => {
             // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example
-            unreachable;
-        },
-    }
-}
-
-// @Todo we don't use this right now!
-pub fn deserialize_value(buffer: []const u8, data_type: muscle.DataType) muscle.Value {
-    switch (data_type) {
-        .int => {
-            // we don't have variable sized integers yet
-            assert(buffer.len >= @sizeOf(i64));
-            return .{ .int = std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little) };
-        },
-        .real => {
-            // we don't have variable sized floats yet
-            assert(buffer.len >= @sizeOf(f64));
-            return .{ .int = @as(f64, @bitCast(std.mem.readInt(i64, buffer[0..@sizeOf(i64)], .little))) };
-        },
-        // strings and blobs are compared lexicographically
-        .txt => {
-            const len = std.mem.readInt(u16, buffer[0..@sizeOf(u16)], .little);
-            return .{ .txt = buffer[@sizeOf(u16) .. @sizeOf(u16) + len] };
-        },
-        .bin => {
-            const len = std.mem.readInt(u16, buffer[0..@sizeOf(u16)], .little);
-            return .{ .bin = buffer[@sizeOf(u16) .. @sizeOf(u16) + len] };
-        },
-        else => {
-            // we don't support booleans as primary keys right now
             unreachable;
         },
     }

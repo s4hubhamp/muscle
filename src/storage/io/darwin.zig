@@ -3,7 +3,6 @@ const muscle = @import("../../muscle.zig");
 
 const Io = std.Io;
 const posix = std.posix;
-const fs = Io.fs;
 const File = Io.File;
 const PAGE_SIZE = muscle.PAGE_SIZE;
 
@@ -14,6 +13,7 @@ pub const IO = struct {
     // if the provided path is incorrect init may fail
     pub fn init(allocator: std.mem.Allocator, absolute_path: []const u8) !IO {
         var io = Io.Threaded.init(allocator, .{});
+        errdefer io.deinit();
 
         // first try to check if the database file exists or not
         // if it does not exists we need to create it and also we need to create metadata page
@@ -57,8 +57,8 @@ pub const IO = struct {
         try Io.File.setLength(self.file, self.io.io(), page_offset(page_number));
     }
 
-    pub fn deinit(self: IO) void {
-        self.file.close();
+    pub fn deinit(self: *IO) void {
+        self.file.close(self.io.io());
         self.io.deinit();
     }
 

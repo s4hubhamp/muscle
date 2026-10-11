@@ -222,7 +222,7 @@ pub const Page = extern struct {
         // @Perf: to make life simple we are calling defragment. this feels non optimal.
         self.defragment(.{ .slot_index = slot_index, .old_size = old.size, .new_size = cell.size });
 
-        // after degramentation, self.last_used_offset should point to the cell we are updating.
+        // after defragmentation, self.last_used_offset should point to the cell we are updating.
         // update slot array
         std.mem.writeInt(
             SlotArrayEntry,
@@ -318,7 +318,7 @@ pub const Page = extern struct {
         return self.right_child == 0;
     }
 
-    // arrange cells towords the end
+    // arrange cells towards the end
     fn defragment(
         self: *Page,
         updating_cell_info: ?struct { slot_index: SlotArrayEntry, old_size: u16, new_size: u16 },
@@ -338,7 +338,7 @@ pub const Page = extern struct {
                 start = @intCast(@as(i32, start) - delta);
             } else {
                 // new size is lesser and hence start can move ahead
-                start = @intCast(@as(i32, start) + delta);
+                start = @intCast(@as(i32, start) - delta);
             }
             // update last_used_offset
             self.last_used_offset = start;
@@ -377,13 +377,15 @@ pub const Page = extern struct {
     }
 };
 
-// we need to limit size of divider key so we have space for atleast two internal cells
+// we need to limit size of divider key so we have space for at least two internal cells
 pub const INTERNAL_CELL_CONTENT_SIZE_LIMIT = blk: { // 2031
     break :blk Page.CONTENT_MAX_SIZE / 2 -
         @sizeOf(Page.SlotArrayEntry) - // Cell offset inside slot array
         Cell.HEADER_SIZE // Cell Header
     ;
 };
+
+pub const EncodedCellContent = []const u8;
 
 // Cell struct gives a view over the raw bytes stored inside the `Page.content`
 pub const Cell = struct {
@@ -401,7 +403,7 @@ pub const Cell = struct {
     //      For leaf node cells content is key + primary key
     //      For internal  node cells content is key.
     //
-    content: []const u8,
+    content: EncodedCellContent,
 
     pub fn init(content: []const u8, left_child: ?muscle.PageNumber) Cell {
         return Cell{
@@ -493,7 +495,7 @@ pub const OverflowPage = extern struct {
     size: u16 = 0,
     // pointer to next free page
     next: muscle.PageNumber = 0,
-    // btyes
+    // bytes
     content: [4088]u8 = [_]u8{0} ** 4088,
 
     comptime {

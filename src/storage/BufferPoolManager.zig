@@ -1,10 +1,11 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
-const constants = @import("constants.zig");
 
 const assert = std.debug.assert;
 const PAGE_SIZE = muscle.PAGE_SIZE;
-const MAX_CACHE_SIZE = constants.MAX_CACHE_SIZE;
+
+// number of pages we can have at a time inside our cache
+pub const MAX_CACHE_SIZE = 1024;
 
 const BufferPoolManager = @This();
 

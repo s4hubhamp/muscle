@@ -1,7 +1,6 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
 const page_types = @import("page_types.zig");
-const constants = @import("constants.zig");
 const BufferPoolManager = @import("BufferPoolManager.zig");
 const Journal = @import("Journal.zig");
 const IO = @import("io.zig").IO;
@@ -14,9 +13,27 @@ const DBMetadataPage = page_types.DBMetadataPage;
 const OverflowPage = page_types.OverflowPage;
 const FreePage = page_types.FreePage;
 const Page = page_types.Page;
-const MAX_DIRTY_COUNT_BEFORE_COMMIT = constants.MAX_DIRTY_COUNT_BEFORE_COMMIT;
 const serde = muscle.common.serde;
 const BoundedArray = muscle.common.BoundedArray;
+
+// When this count is hit, we will commit before proceeding to next query
+// various data structures below are optmized based on this number. Since this is a
+// small and well known number we've choosen Arrays instead of HashMaps since for smaller
+// number of elements arrays perform better or same as hash maps and we can have
+// *static* allocations.
+pub const MAX_DIRTY_COUNT_BEFORE_COMMIT = 1000;
+
+comptime {
+    // This is important.
+    // cache.put should always be able to evict non dirty pages.
+    // Hence we need to make sure that number of dirty pages are always less than max cached capacity.
+    assert(MAX_DIRTY_COUNT_BEFORE_COMMIT < BufferPoolManager.MAX_CACHE_SIZE);
+}
+
+comptime {
+    // Journal unsaved entries will not go over dirty pages
+    assert(Journal.MAX_JOURNAL_UNSAVED_ENTRIES < MAX_DIRTY_COUNT_BEFORE_COMMIT);
+}
 
 // PageManager is responsible to manage pages of database file.
 // It's job is to read and interpret the page by page number
@@ -34,6 +51,7 @@ journal: Journal,
 pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageManager {
     print("Opening Database file.\n", .{});
     var io = try IO.init(allocator, database_file_path);
+    errdefer io.deinit();
     // try to read metadata page
     // if we can't read metadata page that means it does not exists (we need to create new metadata page)
     var metadata_buffer = [_]u8{0} ** PAGE_SIZE;
@@ -51,6 +69,7 @@ pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageM
 
     var dirty_pages = BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT){};
     var cache = try BufferPoolManager.init(allocator);
+    errdefer cache.deinit();
     // insert metadata page into cache
     try cache.put(0, metadata_buffer, dirty_pages.const_slice());
 
@@ -66,6 +85,8 @@ pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageM
 
 pub fn deinit(self: *PageManager) void {
     self.cache.deinit();
+    self.journal.io.deinit();
+    self.io.deinit();
 }
 
 // commit gets called when we reach `max_dirty_pages` OR before returning the results to client
@@ -126,6 +147,8 @@ pub fn rollback(self: *PageManager) !void {
 
     self.dirty_pages.clear();
     try self.journal.clear();
+    // Cached pages may still contain the changes that were just rolled back.
+    self.cache.cache.clearRetainingCapacity();
     print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
 }
 
@@ -142,7 +165,7 @@ pub fn update_page(self: *PageManager, page_number: u32, page_ptr: anytype) !voi
     // A following scenario can happen: we've given a page reference to someone but they did not
     // call update page quick enough and in between their page gets evicted.
     // Hence, we can't always expect the page which we are going to update to be inside cache.
-    const original: *const [4096]u8 = try self.get_page_bytes_from_cache_or_disk(page_number);
+
     var is_dirty = false;
     for (self.dirty_pages.const_slice()) |item| {
         if (item == page_number) {
@@ -152,6 +175,7 @@ pub fn update_page(self: *PageManager, page_number: u32, page_ptr: anytype) !voi
     }
 
     if (!is_dirty) {
+        const original: *const [4096]u8 = try self.get_page_bytes_from_cache_or_disk(page_number);
         try self.mark_dirty(page_number);
 
         // if some page already dirty we know for sure that it's part of journal

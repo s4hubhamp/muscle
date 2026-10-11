@@ -20,6 +20,7 @@ pub const Muscle = struct {
 
     pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Muscle {
         var pager = try PageManager.init(database_file_path, allocator);
+        errdefer pager.deinit();
 
         // call rollback to sync if we had crashed earlier
         print("Calling Rollback after instance start.\n", .{});
@@ -36,36 +37,97 @@ pub const Muscle = struct {
         self.catalog.deinit();
     }
 
-    pub fn execute(self: *Muscle, query: []const u8, arena: std.mem.Allocator) !query_result.QueryResult {
+    pub fn execute(self: *Muscle, query: []const u8, arena: std.mem.Allocator) !query_result.QueryResultV2 {
         var context = QueryContext.init(arena, query, &self.pager, &self.catalog);
-        const is_update_query = false;
-        const should_rollback = false;
+        var is_update_query = false;
+        var should_rollback = false;
+        errdefer if (is_update_query) {
+            self.rollback_and_refresh() catch |err| print("Failed to roll back query: {any}\n", .{err});
+        };
 
         var parser = muscle.Parser.init(&context);
         const statements = parser.parse() catch |err| {
             try maybe_create_client_error_response(&context, err);
-            return context.result;
+            return context.resultV2;
         };
 
         muscle.analyzer.analyze(&context, statements) catch |err| {
             try maybe_create_client_error_response(&context, err);
-            return context.result;
+            return context.resultV2;
         };
 
-        for (statements) |statement| {
-            switch (statement) {
-                .create_table => |payload| {
-                    self.create_table(&context, payload) catch |err| {
-                        try maybe_create_client_error_response(&context, err);
-                    };
+        const plans = muscle.planner.make_plans(&context, statements) catch |err| {
+            try maybe_create_client_error_response(&context, err);
+            return context.resultV2;
+        };
+
+        execution: for (plans) |*plan| {
+            switch (plan.*) {
+                .unplanned => |stmt| {
+                    switch (stmt) {
+                        .create_table => |payload| {
+                            is_update_query = true;
+                            self.create_table(&context, payload) catch |err| {
+                                should_rollback = true;
+                                try maybe_create_client_error_response(&context, err);
+                                break :execution;
+                            };
+                        },
+                        else => unreachable,
+                    }
                 },
-                else => unreachable,
+
+                .project => |*project| {
+                    try context.set_result_columns(project.columns);
+                    while (project.next() catch |err| {
+                        should_rollback = is_update_query;
+                        try maybe_create_client_error_response(&context, err);
+                        break :execution;
+                    }) |row| try context.append_data(row);
+                },
+
+                .insert => |*insert_plan| {
+                    is_update_query = true;
+                    try context.set_result_columns(&.{.{ .name = "rows_created", .data_type = .int }});
+                    if (insert_plan.next() catch |err| {
+                        should_rollback = true;
+                        try maybe_create_client_error_response(&context, err);
+                        break :execution;
+                    }) |row| try context.append_data(row);
+                },
+
+                .update => |*update_plan| {
+                    is_update_query = true;
+                    try context.set_result_columns(&.{.{ .name = "rows_affected", .data_type = .int }});
+                    if (update_plan.next() catch |err| {
+                        should_rollback = true;
+                        try maybe_create_client_error_response(&context, err);
+                        break :execution;
+                    }) |row| try context.append_data(row);
+                },
+
+                .seq_scan => {
+                    unreachable;
+                },
+
+                .sort, .exact_match, .range_scan, .index_scan, .filter, .logical_or_scan => {},
             }
         }
 
+        // for (statements) |statement| {
+        //     switch (statement) {
+        //         .create_table => |payload| {
+        //             self.create_table(&context, payload) catch |err| {
+        //                 try maybe_create_client_error_response(&context, err);
+        //             };
+        //         },
+        //         else => unreachable,
+        //     }
+        // }
+
         if (should_rollback) {
             print("Processing failed. Calling Rollback.\n", .{});
-            self.pager.rollback() catch |rollback_err| {
+            self.rollback_and_refresh() catch |rollback_err| {
                 // If rollback fails, this is a critical system error
                 print("CRITICAL FAILURE: Rollback failed: {any}\n", .{rollback_err});
                 //@panic("Database in inconsistent state - rollback failed");
@@ -78,7 +140,14 @@ pub const Muscle = struct {
             };
         }
 
-        return context.result;
+        return context.resultV2;
+    }
+
+    fn rollback_and_refresh(self: *Muscle) !void {
+        try self.pager.rollback();
+        const catalog = try muscle.Catalog_Manager.init(self.allocator, &self.pager);
+        self.catalog.deinit();
+        self.catalog = catalog;
     }
 
     pub fn execute_query(self: *Muscle, query: Query, arena: std.mem.Allocator) !query_result.QueryResult {
@@ -156,8 +225,7 @@ pub const Muscle = struct {
         const classification = errors.classify_error(err);
         switch (classification) {
             .client => {
-                _ = context;
-                //try context.set_err(err, "Unhandled client error: {any}. Should probably have a nicer error message.", .{err});
+                if (context.result != .err) try context.set_err(err, "{s}", .{@errorName(err)});
             },
             .system => {
                 return err;
@@ -165,7 +233,7 @@ pub const Muscle = struct {
         }
     }
 
-    fn create_table(self: *Muscle, context: *QueryContext, payload: muscle.Parser.types.CreateTable) !void {
+    fn create_table(self: *Muscle, context: *QueryContext, payload: muscle.statement.CreateTable) !void {
         _ = self;
 
         if (context.catalog.find_table(payload.table) != null) {
@@ -184,11 +252,11 @@ pub const Muscle = struct {
         for (payload.columns, 0..) |*column, i| {
             if (column.auto_increment and column.data_type != .int) {
                 try context.set_err(
-                    error.AutoIncrementColumnMustBeInteger,
+                    error.AutoIncrementConstraintViolation,
                     "Auto increment column must be of type Integer. Column {s} is {s}",
                     .{ column.name, @tagName(column.data_type) },
                 );
-                return error.AutoIncrementColumnMustBeInteger;
+                return error.AutoIncrementConstraintViolation;
             }
 
             if (i == payload.primary_key_column_index) {
@@ -222,13 +290,14 @@ pub const Muscle = struct {
 
                 new_table.primary_key = column.name;
             }
-
-            // @Perf Can we reorder columns for efficient operations?
-            try new_table.columns.put(context.arena, column.name, column.*);
         }
 
-        // create a default primary key column if not provided
-        if (payload.primary_key_column_index == null) {
+        // Rows are serialized in column order, and BTree operations read the key
+        // from the beginning of each row. Always insert the primary key first.
+        if (payload.primary_key_column_index) |primary_key_index| {
+            const column = payload.columns[primary_key_index];
+            try new_table.columns.put(context.arena, column.name, column);
+        } else {
             const DEFAULT_PRIMARY_KEY_COLUMN_NAME = "Row_Id";
             const DEFAULT_PRIMARY_KEY_COLUMN_TYPE = .int;
             try new_table.columns.put(context.arena, DEFAULT_PRIMARY_KEY_COLUMN_NAME, muscle.Column{
@@ -240,6 +309,11 @@ pub const Muscle = struct {
                 .max_int_value = 0,
             });
             new_table.primary_key = DEFAULT_PRIMARY_KEY_COLUMN_NAME;
+        }
+
+        for (payload.columns) |column| {
+            if (std.mem.eql(u8, column.name, new_table.primary_key)) continue;
+            try new_table.columns.put(context.arena, column.name, column);
         }
 
         const root_page_number = try context.pager.alloc_free_page(context.catalog.metadata);
@@ -325,6 +399,13 @@ pub const Muscle = struct {
                     // need to adjust max value if current value is bigger
                     if (column.max_int_value < final_value_to_serialize.int) {
                         column.max_int_value = final_value_to_serialize.int;
+                    } else if (column.max_int_value >= final_value_to_serialize.int) {
+                        try context.set_err(
+                            error.AutoIncrementConstraintViolation,
+                            "Value is less than current maximum for auto incremented column. Current Value {d} Provided {d}",
+                            .{ column.max_int_value, final_value_to_serialize.int },
+                        );
+                        return error.AutoIncrementConstraintViolation;
                     }
                 }
 
@@ -353,8 +434,7 @@ pub const Muscle = struct {
                 }
             }
 
-            try serde.serailize_value(&buffer, final_value_to_serialize);
-
+            try serde.serialize_value(&buffer, final_value_to_serialize);
             if (std.mem.eql(u8, column.name, table.primary_key)) {
                 primary_key_bytes = buffer.const_slice();
                 primary_key_type = column.data_type;
@@ -465,9 +545,8 @@ pub const Muscle = struct {
                 }
             }
 
-            try serde.serailize_value(&buffer, final_value_to_serialize);
+            try serde.serialize_value(&buffer, final_value_to_serialize);
 
-            // first column is always the primary key
             if (std.mem.eql(u8, table.primary_key, column.name)) {
                 primary_key_bytes = buffer.const_slice();
                 primary_key_type = column.data_type;
@@ -505,7 +584,7 @@ pub const Muscle = struct {
 
         // primary key has size limit
         var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
-        try serde.serailize_value(&buffer, payload.key);
+        try serde.serialize_value(&buffer, payload.key);
 
         var btree = BTree.init(context, table.root, table.columns.get(table.primary_key).?.data_type);
         try btree.delete(buffer.const_slice());
@@ -833,3 +912,7 @@ pub const Query = union(enum) {
     select_table_info: SelectTableMetadata,
     select_database_info,
 };
+
+test {
+    _ = @import("testing/database.zig");
+}

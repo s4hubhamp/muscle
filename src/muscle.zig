@@ -5,12 +5,13 @@ pub const common = @import("common.zig");
 pub const PageManager = @import("storage/PageManager.zig");
 pub const page_types = @import("storage/page_types.zig");
 pub const BTree = @import("execution/BTree.zig");
-pub const Cursor = @import("execution/Cursor.zig");
 pub const QueryContext = @import("QueryContext.zig");
 pub const query_result = @import("query_result.zig");
 pub const Catalog_Manager = @import("catalog/CatalogManager.zig");
 pub const Parser = @import("parser/Parser.zig");
-//pub const Planner = @import("planner.zig");
+pub const expression = @import("parser/expression.zig");
+pub const statement = @import("parser/statement.zig");
+pub const planner = @import("planner.zig");
 pub const analyzer = @import("analyzer.zig");
 
 pub const Table = struct {
@@ -20,7 +21,7 @@ pub const Table = struct {
     name: []const u8,
     // columns keyed by name for lookup
     columns: std.array_hash_map.String(Column),
-    // primary key column name
+    // primary key column name @Todo do we really need this? because pk is always the first column
     primary_key: []const u8,
     // index is outside column because we may have compound indexes
     indexes: []Index,
@@ -113,6 +114,14 @@ pub const Value = union(enum) {
             .txt => |slice| .{ .txt = try allocator.dupe(u8, slice) },
             .bin => |slice| .{ .bin = try allocator.dupe(u8, slice) },
             else => self,
+        };
+    }
+
+    pub fn to_f64(self: Value) f64 {
+        return switch (self) {
+            .int => |v| @floatFromInt(v),
+            .real => |v| @floatCast(v),
+            else => unreachable,
         };
     }
 };
