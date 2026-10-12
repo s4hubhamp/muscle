@@ -92,11 +92,14 @@ const InsertPlan = struct {
 
         // for each column find value
         for (table.columns.values()) |*column| {
-            const value = self.find_value(column.name);
+            const value: ?muscle.Value = if (self.find_value(column.name)) |expr|
+                try resolve_expression(self.context, &table, &.{}, expr)
+            else
+                null;
             var final_value_to_serialize: muscle.Value = .{ .null = {} };
 
             // if value is not provided or it's provided and null
-            if (value == null or value.?.value == .null) {
+            if (value == null or value.? == .null) {
                 if (column.auto_increment) {
                     // increment value and serialize
                     column.max_int_value += 1;
@@ -104,14 +107,14 @@ const InsertPlan = struct {
                 } else if (column.not_null) {
                     return error.MissingValue;
                 } else {
-                    // use default value on column definition and serialize
-                    // @Todo
-                    unreachable;
+                    // A nullable column with no supplied value stores NULL.
+                    final_value_to_serialize = .null;
                 }
             } else {
-                final_value_to_serialize = value.?.value;
+                final_value_to_serialize = value.?;
 
                 if (column.auto_increment) {
+                    if (final_value_to_serialize != .int) return error.TypeMismatch;
                     // here we have auto_increment but we are still getting value
                     // need to adjust max value if current value is bigger
                     if (column.max_int_value < final_value_to_serialize.int) {
@@ -205,7 +208,7 @@ const UpdatePlan = struct {
                         // All assignments use the original row, including swaps.
                         value = try resolve_expression(self.context, &table, original, assignment.value);
                         value = try update_value(column.*, value);
-                        if (column.auto_increment and value.int > column.max_int_value) column.max_int_value = value.int;
+                        if (column.auto_increment and value == .int and value.int > column.max_int_value) column.max_int_value = value.int;
                         break;
                     }
                 }
@@ -227,7 +230,7 @@ const UpdatePlan = struct {
 
 fn update_value(column: muscle.Column, original: muscle.Value) !muscle.Value {
     var value = original;
-    if (value == .null) return if (column.not_null) error.MissingValue else error.TypeMismatch;
+    if (value == .null) return if (column.not_null) error.MissingValue else value;
     switch (column.data_type) {
         .int => {
             // Arithmetic expressions return REAL; only exact integers fit INT.
@@ -271,7 +274,6 @@ const ProjectPlan = struct {
         var buffer = BoundedArray(u8, muscle.page_types.Page.CONTENT_MAX_SIZE){};
         for (self.projection) |expression| {
             const value = try resolve_expression(self.context, self.table, row, expression);
-            if (value == .null) return error.InvalidExpression;
             try serde.serialize_value(&buffer, value);
         }
         return try self.context.arena.dupe(u8, buffer.const_slice());
@@ -340,6 +342,7 @@ const ExactMatchPlan = struct {
         if (self.done) return null;
         self.done = true;
         var key = try resolve_expression(self.context, self.table, &.{}, self.key_expression);
+        if (key == .null) return null;
         const key_type = self.table.columns.get(self.table.primary_key).?.data_type;
         // Numeric equality allows INT and REAL operands; fractional INT keys cannot match.
         if (key_type == .int and key == .real) {
@@ -401,6 +404,10 @@ const RangeScanPlan = struct {
         const key_type = self.table.columns.get(self.table.primary_key).?.data_type;
         for (self.constraints) |constraint| {
             var value = try resolve_expression(self.context, self.table, &.{}, constraint.expression);
+            if (value == .null) {
+                self.done = true;
+                return;
+            }
             var operator = constraint.operator;
             if (key_type == .int and value == .real) {
                 const number = value.real;
@@ -499,6 +506,7 @@ const FilterPlan = struct {
         if (self.limit) |limit| if (self.collected >= limit) return null;
         while (try self.source.next()) |row| {
             const matches = try resolve_expression(self.context, self.table, row, self.predicate);
+            if (matches == .null) continue;
             if (matches != .bool) return error.TypeMismatch;
             if (matches.bool) {
                 self.collected += 1;
@@ -736,6 +744,10 @@ fn range_constraints(context: *muscle.QueryContext, table: *const muscle.Table, 
 
 // Infer the output type before scanning so empty results still have a schema.
 fn expression_data_type(context: *muscle.QueryContext, table: *const muscle.Table, expression: Expression) anyerror!muscle.DataType {
+    return try infer_expression_data_type(context, table, expression) orelse error.InvalidExpression;
+}
+
+fn infer_expression_data_type(context: *muscle.QueryContext, table: *const muscle.Table, expression: Expression) anyerror!?muscle.DataType {
     return switch (expression) {
         .identifier => |name| if (table.columns.get(name)) |column| column.data_type else blk: {
             try context.set_err(error.ColumnDoesNotExist, "Referenced column does not exist {s}.", .{name});
@@ -747,24 +759,24 @@ fn expression_data_type(context: *muscle.QueryContext, table: *const muscle.Tabl
             .bool => .bool,
             .txt => |text| .{ .txt = std.math.cast(u16, text.len) orelse return error.TextTooLong },
             .bin => |bytes| .{ .bin = std.math.cast(u16, bytes.len) orelse return error.BinaryTooLarge },
-            .null => error.InvalidExpression,
+            .null => null,
         },
         .binary_operation => |binary| blk: {
-            _ = try expression_data_type(context, table, binary.left.*);
-            _ = try expression_data_type(context, table, binary.right.*);
+            _ = try infer_expression_data_type(context, table, binary.left.*);
+            _ = try infer_expression_data_type(context, table, binary.right.*);
             break :blk switch (binary.operator) {
                 .plus, .minus, .mul, .div => .real,
                 .eq, .neq, .lt, .lte, .gt, .gte, .logical_and, .logical_or => .bool,
             };
         },
         .unary_operation => |unary| blk: {
-            _ = try expression_data_type(context, table, unary.operand.*);
+            _ = try infer_expression_data_type(context, table, unary.operand.*);
             break :blk switch (unary.operator) {
                 .plus, .minus => .real,
                 .not => .bool,
             };
         },
-        .nested => |nested| if (nested) |inner| try expression_data_type(context, table, inner.*) else error.InvalidExpression,
+        .nested => |nested| if (nested) |inner| try infer_expression_data_type(context, table, inner.*) else error.InvalidExpression,
         .star => error.InvalidExpression,
     };
 }
@@ -783,6 +795,7 @@ pub fn resolve_expression(
             const right = try resolve_expression(context, table, content, binary.right.*);
             switch (binary.operator) {
                 .eq, .neq, .lt, .lte, .gt, .gte => {
+                    if (left == .null or right == .null) return .null;
                     const left_tag = std.meta.activeTag(left);
                     const right_tag = std.meta.activeTag(right);
                     const operands_are_numeric = (left_tag == .int or left_tag == .real) and
@@ -825,6 +838,7 @@ pub fn resolve_expression(
                     } };
                 },
                 .plus, .minus, .mul, .div => {
+                    if (left == .null or right == .null) return .null;
                     const left_tag = std.meta.activeTag(left);
                     const right_tag = std.meta.activeTag(right);
                     if ((left_tag != .int and left_tag != .real) or
@@ -854,7 +868,7 @@ pub fn resolve_expression(
                     } };
                 },
                 .logical_and, .logical_or => {
-                    if (left != .bool or right != .bool) {
+                    if ((left != .bool and left != .null) or (right != .bool and right != .null)) {
                         try context.set_err(
                             error.IncompatibleTypes,
                             "Incompatible types for {s} operation. left {s} right {s}",
@@ -863,11 +877,16 @@ pub fn resolve_expression(
                         return error.IncompatibleTypes;
                     }
 
-                    return .{ .bool = switch (binary.operator) {
-                        .logical_and => left.bool and right.bool,
-                        .logical_or => left.bool or right.bool,
-                        else => unreachable,
-                    } };
+                    // SQL three-valued logic: FALSE AND NULL is FALSE;
+                    // TRUE OR NULL is TRUE; other unknown results remain NULL.
+                    if (binary.operator == .logical_and) {
+                        if ((left == .bool and !left.bool) or (right == .bool and !right.bool)) return .{ .bool = false };
+                        if (left == .null or right == .null) return .null;
+                        return .{ .bool = true };
+                    }
+                    if ((left == .bool and left.bool) or (right == .bool and right.bool)) return .{ .bool = true };
+                    if (left == .null or right == .null) return .null;
+                    return .{ .bool = false };
                 },
             }
         },
@@ -887,6 +906,7 @@ pub fn resolve_expression(
                     },
                 },
                 .plus, .minus => switch (operand) {
+                    .null => .null,
                     .int, .real => .{ .real = switch (unary.operator) {
                         .plus => operand.to_f64(),
                         .minus => -operand.to_f64(),

@@ -396,6 +396,7 @@ fn parse_prefix(self: *Self) !Expression {
         .keyword => |kw| switch (kw) {
             .true => return Expression{ .value = .{ .bool = true } },
             .false => return Expression{ .value = .{ .bool = false } },
+            .null => return Expression{ .value = .null },
             else => return self.set_err("Unexpcted keyword `{s}` while parsing expression", .{@tagName(kw)}),
         },
         .number => |num_str| {

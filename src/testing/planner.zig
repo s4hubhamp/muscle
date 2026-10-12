@@ -28,7 +28,7 @@ test "UPDATE plan retains assignments and predicate and completes once" {
     try std.testing.expect(update.assignments[0].value == .binary_operation);
     try std.testing.expect(update.where.? == .binary_operation);
     const count = (try update.next()).?;
-    try std.testing.expectEqual(@as(i64, 0), std.mem.readInt(i64, count[0..8], .little));
+    try std.testing.expectEqual(@as(i64, 0), std.mem.readInt(i64, count[1..9], .little));
     try std.testing.expectEqual(@as(?muscle.page_types.EncodedCellContent, null), try update.next());
 }
 
@@ -130,8 +130,8 @@ test "ExactMatchPlan yields a matching row once" {
     const plans = try muscle.planner.make_plans(context, statements);
     const exact = &plans[0].project.source.exact_match;
     const row = (try exact.next()).?;
-    try std.testing.expectEqual(@as(i64, 1), std.mem.readInt(i64, row[0..8], .little));
-    try std.testing.expectEqual(@as(i64, 42), std.mem.readInt(i64, row[8..16], .little));
+    try std.testing.expectEqual(@as(i64, 1), std.mem.readInt(i64, row[1..9], .little));
+    try std.testing.expectEqual(@as(i64, 42), std.mem.readInt(i64, row[10..18], .little));
     try std.testing.expectEqual(@as(?muscle.page_types.EncodedCellContent, null), try exact.next());
 }
 

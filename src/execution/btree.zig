@@ -101,7 +101,12 @@ pub fn seek(self: *Self, key: []const u8, inclusive: bool) !struct { page: muscl
     return .{ .page = page, .slot = slot };
 }
 
+fn assert_nonnull_key(key: []const u8) void {
+    assert(key.len > 1 and key[0] != 0);
+}
+
 pub fn insert(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
+    assert_nonnull_key(key);
     var path = try self.search_internal(key);
     defer path.deinit(self.context.arena);
 
@@ -140,6 +145,7 @@ pub fn insert(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
 }
 
 pub fn update(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
+    assert_nonnull_key(key);
     const cell = Cell.init(cell_bytes, null);
     var path = try self.search_internal(key);
     defer path.deinit(self.context.arena);
@@ -194,6 +200,7 @@ pub fn update(self: *Self, key: []const u8, cell_bytes: []const u8) !void {
 }
 
 pub fn delete(self: *Self, key: []const u8) !void {
+    assert_nonnull_key(key);
     var path = try self.search_internal(key);
     defer path.deinit(self.context.arena);
 
@@ -669,7 +676,7 @@ fn modify_leaf_node(
                 // if it's a new cell then we need to add this new cell before existing cell
                 if (is_new_cell) {
                     bytes_slice = try self.context.arena.alloc(u8, cell.size);
-                    cell.serialize(bytes_slice);
+                    cell.to_bytes(bytes_slice);
                     try raw_cells.append(self.context.arena, bytes_slice);
 
                     // add existing cell
@@ -678,7 +685,7 @@ fn modify_leaf_node(
                 } else {
                     // skip adding existing cell and only add new cell
                     bytes_slice = try self.context.arena.alloc(u8, cell.size);
-                    cell.serialize(bytes_slice);
+                    cell.to_bytes(bytes_slice);
                     try raw_cells.append(self.context.arena, bytes_slice);
                 }
             } else {
@@ -690,7 +697,7 @@ fn modify_leaf_node(
         // if we need to insert at last
         if (s.page_number == cell_page_number and cell_slot_index == s.page.num_slots) {
             const bytes_slice = try self.context.arena.alloc(u8, cell.size);
-            cell.serialize(bytes_slice);
+            cell.to_bytes(bytes_slice);
             try raw_cells.append(self.context.arena, bytes_slice);
         }
 
@@ -845,7 +852,7 @@ fn split_internal_root(
             sibling_info.sibling_page_number,
         );
         bytes_slice = try self.context.arena.alloc(u8, cell.size);
-        cell.serialize(bytes_slice);
+        cell.to_bytes(bytes_slice);
         try raw_cells.append(self.context.arena, bytes_slice);
     }
 
@@ -858,7 +865,7 @@ fn split_internal_root(
             const new_page = try self.context.pager.get_page(Page, new_page_number);
             cell = Cell.init(try self.get_divider_key(&new_page), new_page_number);
             const bytes_slice = try self.context.arena.alloc(u8, cell.size);
-            cell.serialize(bytes_slice);
+            cell.to_bytes(bytes_slice);
             try raw_cells.append(self.context.arena, bytes_slice);
         }
     }
@@ -980,7 +987,7 @@ fn modify_internal_node(
                     info.sibling_page_number,
                 );
                 bytes_slice = try self.context.arena.alloc(u8, cell.size);
-                cell.serialize(bytes_slice);
+                cell.to_bytes(bytes_slice);
                 try raw_cells.append(self.context.arena, bytes_slice);
             }
 
@@ -989,7 +996,7 @@ fn modify_internal_node(
                 const new_page = try self.context.pager.get_page(Page, new_page_number);
                 const cell = Cell.init(try self.get_divider_key(&new_page), new_page_number);
                 bytes_slice = try self.context.arena.alloc(u8, cell.size);
-                cell.serialize(bytes_slice);
+                cell.to_bytes(bytes_slice);
                 try raw_cells.append(self.context.arena, bytes_slice);
             }
 
@@ -1004,7 +1011,7 @@ fn modify_internal_node(
                             sibling.right_child,
                         );
                         bytes_slice = try self.context.arena.alloc(u8, cell.size);
-                        cell.serialize(bytes_slice);
+                        cell.to_bytes(bytes_slice);
                         try raw_cells.append(self.context.arena, bytes_slice);
                     } else {
                         bytes_slice = try self.context.arena.dupe(
@@ -1029,7 +1036,7 @@ fn modify_internal_node(
                     sibling.right_child,
                 );
                 bytes_slice = try self.context.arena.alloc(u8, cell.size);
-                cell.serialize(bytes_slice);
+                cell.to_bytes(bytes_slice);
                 try raw_cells.append(self.context.arena, bytes_slice);
             }
         }

@@ -23,6 +23,8 @@ pub fn deserialize_page(comptime T: type, buffer: []const u8) !T {
     return try reader.takeStruct(T, .little);
 }
 
+/// Every value starts with one byte: 0 = NULL (no payload), 1 = present.
+/// The same encoding is used for stored rows, keys, and query results.
 pub fn deserialize_value(
     context: *muscle.QueryContext,
     table: *const muscle.Table,
@@ -31,165 +33,113 @@ pub fn deserialize_value(
 ) !muscle.Value {
     var offset: usize = 0;
     for (table.columns.values()) |column| {
-        const encoded_len: usize = switch (column.data_type) {
-            .int, .real => @sizeOf(i64),
-            .bool => 1,
-            .txt, .bin => blk: {
-                if (content.len -| offset < @sizeOf(u16)) {
-                    try context.set_err(error.CorruptedData, "Row data is truncated.", .{});
-                    return error.CorruptedData;
-                }
-                const len = std.mem.readInt(
-                    u16,
-                    content[offset..][0..@sizeOf(u16)],
-                    .little,
-                );
-                break :blk @sizeOf(u16) + @as(usize, len);
-            },
+        const value = read_value(content, &offset, column.data_type) catch |err| {
+            try context.set_err(err, "Row data is invalid or truncated.", .{});
+            return err;
         };
-
-        if (content.len -| offset < encoded_len) {
-            try context.set_err(error.CorruptedData, "Row data is truncated.", .{});
-            return error.CorruptedData;
-        }
-
-        if (std.mem.eql(u8, column.name, column_name)) {
-            return switch (column.data_type) {
-                .int => .{ .int = std.mem.readInt(
-                    i64,
-                    content[offset..][0..@sizeOf(i64)],
-                    .little,
-                ) },
-                .real => .{ .real = @bitCast(std.mem.readInt(
-                    i64,
-                    content[offset..][0..@sizeOf(i64)],
-                    .little,
-                )) },
-                .bool => .{ .bool = content[offset] != 0 },
-                .txt => .{ .txt = content[offset + @sizeOf(u16) .. offset + encoded_len] },
-                .bin => .{ .bin = content[offset + @sizeOf(u16) .. offset + encoded_len] },
-            };
-        }
-
-        offset += encoded_len;
+        if (std.mem.eql(u8, column.name, column_name)) return value;
     }
     try context.set_err(error.ColumnDoesNotExist, "Referenced column does not exist {s}.", .{column_name});
     return error.ColumnDoesNotExist;
 }
 
-pub fn serialize(val: muscle.Value, allocator: std.mem.Allocator) ![]u8 {
-    switch (val) {
-        .int => |i| {
-            const tmp = try allocator.alloc(u8, 8);
-            std.mem.writeInt(i64, @ptrCast(tmp), i, .little);
-            return tmp;
+fn read_bytes(content: []const u8, offset: *usize, len: usize) ![]const u8 {
+    if (offset.* > content.len or content.len - offset.* < len) return error.CorruptedData;
+    const bytes = content[offset.*..][0..len];
+    offset.* += len;
+    return bytes;
+}
+
+/// Read one column and advance past exactly its marker and optional payload.
+pub fn read_value(content: []const u8, offset: *usize, data_type: muscle.DataType) !muscle.Value {
+    switch ((try read_bytes(content, offset, 1))[0]) {
+        0 => return .null,
+        1 => {},
+        else => return error.CorruptedData,
+    }
+    return switch (data_type) {
+        .int => .{ .int = std.mem.readInt(i64, (try read_bytes(content, offset, 8))[0..8], .little) },
+        .real => .{ .real = @bitCast(std.mem.readInt(u64, (try read_bytes(content, offset, 8))[0..8], .little)) },
+        .bool => blk: {
+            const byte = (try read_bytes(content, offset, 1))[0];
+            if (byte > 1) return error.CorruptedData;
+            break :blk .{ .bool = byte != 0 };
         },
-        .real => |i| {
-            const tmp = try allocator.alloc(u8, 8);
-            std.mem.writeInt(i64, @ptrCast(tmp), @as(i64, @bitCast(i)), .little);
-            return tmp;
+        .txt, .bin => blk: {
+            const len = std.mem.readInt(u16, (try read_bytes(content, offset, 2))[0..2], .little);
+            const bytes = try read_bytes(content, offset, len);
+            break :blk if (data_type == .txt) .{ .txt = bytes } else .{ .bin = bytes };
         },
-        .bool => |b| {
-            var tmp = try allocator.alloc(u8, 1);
-            tmp[0] = if (b) 1 else 0;
-            return tmp;
-        },
-        .txt => |str| {
-            const tmp = try allocator.alloc(u8, 2 + str.len);
-            std.mem.writeInt(u16, @ptrCast(tmp), @intCast(str.len), .little);
-            for (tmp[2..], str[0..]) |*ptr, byte| {
-                ptr.* = byte;
-            }
-            return tmp;
-        },
-        .bin => |blob| {
-            const tmp = try allocator.alloc(u8, 2 + blob.len);
-            std.mem.writeInt(u16, @ptrCast(tmp), @intCast(blob.len), .little);
-            for (tmp[2..], blob[0..]) |*ptr, byte| {
-                ptr.* = byte;
-            }
-            return tmp;
-        },
-        .null => {
-            // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example
-            unreachable;
+    };
+}
+
+fn encoded_size(value: muscle.Value) !usize {
+    return switch (value) {
+        .null => 1,
+        .int, .real => 9,
+        .bool => 2,
+        .txt => |text| if (text.len <= std.math.maxInt(u16)) 3 + text.len else error.TextTooLong,
+        .bin => |bytes| if (bytes.len <= std.math.maxInt(u16)) 3 + bytes.len else error.BinaryTooLarge,
+    };
+}
+
+fn write_value(bytes: []u8, value: muscle.Value) void {
+    bytes[0] = if (value == .null) 0 else 1;
+    switch (value) {
+        .null => {},
+        .int => |number| std.mem.writeInt(i64, bytes[1..9], number, .little),
+        .real => |number| std.mem.writeInt(u64, bytes[1..9], @bitCast(number), .little),
+        .bool => |boolean| bytes[1] = @intFromBool(boolean),
+        .txt, .bin => |payload| {
+            std.mem.writeInt(u16, bytes[1..3], @intCast(payload.len), .little);
+            @memcpy(bytes[3..], payload);
         },
     }
 }
 
-pub fn serialize_value(buffer: *muscle.common.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), val: muscle.Value) !void {
-    switch (val) {
-        .int => |i| {
-            if (buffer.capacity() - buffer.len < 8) return error.RowTooBig;
+pub fn serialize(value: muscle.Value, allocator: std.mem.Allocator) ![]u8 {
+    const bytes = try allocator.alloc(u8, try encoded_size(value));
+    write_value(bytes, value);
+    return bytes;
+}
 
-            var tmp: [8]u8 = undefined;
-            std.mem.writeInt(i64, &tmp, i, .little);
-            buffer.push_slice(&tmp);
-        },
-        .real => |i| {
-            if (buffer.capacity() - buffer.len < 8) return error.RowTooBig;
-
-            var tmp: [8]u8 = undefined;
-            std.mem.writeInt(i64, &tmp, @as(i64, @bitCast(i)), .little);
-            buffer.push_slice(&tmp);
-        },
-        .bool => |b| {
-            if (buffer.capacity() - buffer.len < 8) return error.RowTooBig;
-
-            buffer.push(if (b) 1 else 0);
-        },
-        .txt => |str| {
-            if (buffer.capacity() - buffer.len < (2 + str.len)) return error.RowTooBig;
-
-            var tmp: [2]u8 = undefined;
-            std.mem.writeInt(
-                u16,
-                &tmp,
-                @intCast(str.len), // safe because we check the length before reaching here
-                .little,
-            );
-
-            buffer.push_slice(&tmp);
-            buffer.push_slice(str);
-        },
-        .bin => |blob| {
-            if (buffer.capacity() - buffer.len < (2 + blob.len)) return error.RowTooBig;
-
-            var tmp: [2]u8 = undefined;
-            std.mem.writeInt(
-                u16,
-                &tmp,
-                @intCast(blob.len), // safe because we check the length before reaching here
-                .little,
-            );
-
-            buffer.push_slice(&tmp);
-            buffer.push_slice(blob);
-        },
-        .null => {
-            // @Todo how to serialize nulls? once we support null as a value we also need to support how to understand and deserialize it when doing select for example
-            unreachable;
-        },
-    }
+pub fn serialize_value(buffer: *muscle.common.BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE), value: muscle.Value) !void {
+    const len = try encoded_size(value);
+    // Check the marker AND payload before changing the row buffer.
+    if (buffer.capacity() - buffer.len < len) return error.RowTooBig;
+    write_value(buffer.unused_capacity_slice()[0..len], value);
+    buffer.len += @intCast(len);
 }
 
 pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []const u8) std.math.Order {
+    assert(a.len > 1 and b.len > 1);
+
+    // We can't compare null values
+    if (a[0] == 0 or b[0] == 0) {
+        unreachable;
+    }
+
+    const _a = a[1..];
+    const _b = b[1..];
+
     switch (data_type) {
         .int => {
             // we don't have variable sized integers yet
-            assert(a.len == @sizeOf(i64));
-            assert(a.len == b.len);
-            const _a = std.mem.readInt(i64, @ptrCast(a), .little);
-            const _b = std.mem.readInt(i64, @ptrCast(b), .little);
-            return std.math.order(_a, _b);
+            assert(_a.len == @sizeOf(i64));
+            assert(_a.len == _b.len);
+            return std.math.order(
+                std.mem.readInt(i64, @ptrCast(_a), .little),
+                std.mem.readInt(i64, @ptrCast(_b), .little),
+            );
         },
         .real => {
             // we don't have variable sized floats yet
-            assert(a.len == @sizeOf(f64));
-            assert(a.len == b.len);
-            const _a = @as(f64, @bitCast(std.mem.readInt(i64, @ptrCast(a), .little)));
-            const _b = @as(f64, @bitCast(std.mem.readInt(i64, @ptrCast(b), .little)));
-            return std.math.order(_a, _b);
+            assert(_a.len == @sizeOf(f64));
+            assert(_a.len == _b.len);
+            return std.math.order(
+                @as(f64, @bitCast(std.mem.readInt(u64, @ptrCast(_a), .little))),
+                @as(f64, @bitCast(std.mem.readInt(u64, @ptrCast(_b), .little))),
+            );
         },
         // strings and blobs are compared lexicographically
         .txt, .bin => {
@@ -198,20 +148,20 @@ pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []
             // But these asserts are faily cheap so we are gonna keep them as is.
             //
             // Ensure we have at least the length prefix
-            assert(a.len >= @sizeOf(u16));
-            assert(b.len >= @sizeOf(u16));
+            assert(_a.len >= @sizeOf(u16));
+            assert(_b.len >= @sizeOf(u16));
 
             // Read the lengths
-            const len_a = std.mem.readInt(u16, a[0..@sizeOf(u16)], .little);
-            const len_b = std.mem.readInt(u16, b[0..@sizeOf(u16)], .little);
+            const len_a = std.mem.readInt(u16, _a[0..@sizeOf(u16)], .little);
+            const len_b = std.mem.readInt(u16, _b[0..@sizeOf(u16)], .little);
 
             // Ensure the buffers contain the full data
-            assert(a.len >= @sizeOf(u16) + len_a);
-            assert(b.len >= @sizeOf(u16) + len_b);
+            assert(_a.len >= @sizeOf(u16) + len_a);
+            assert(_b.len >= @sizeOf(u16) + len_b);
 
             // Extract the actual data (skip the length prefix)
-            const data_a = a[@sizeOf(u16) .. @sizeOf(u16) + len_a];
-            const data_b = b[@sizeOf(u16) .. @sizeOf(u16) + len_b];
+            const data_a = _a[@sizeOf(u16) .. @sizeOf(u16) + len_a];
+            const data_b = _b[@sizeOf(u16) .. @sizeOf(u16) + len_b];
 
             // Compare lexicographically
             return std.mem.order(u8, data_a, data_b);
@@ -221,4 +171,8 @@ pub fn compare_serialized_bytes(data_type: muscle.DataType, a: []const u8, b: []
             unreachable;
         },
     }
+}
+
+test {
+    _ = @import("../testing/serde.zig");
 }

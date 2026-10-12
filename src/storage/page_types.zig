@@ -119,7 +119,7 @@ pub const Page = extern struct {
     }
 
     fn put_cell_at_offset(self: *Page, cell: Cell, offset: SlotArrayEntry) void {
-        cell.serialize(self.content[offset .. offset + cell.size]);
+        cell.to_bytes(self.content[offset .. offset + cell.size]);
     }
 
     // append the cell at last
@@ -415,7 +415,7 @@ pub const Cell = struct {
 
     // serializes Cell attributes and writes those bytes inside provided slice
     // This does not serialize cell content
-    pub fn serialize(self: *const Cell, slice: []u8) void {
+    pub fn to_bytes(self: *const Cell, slice: []u8) void {
         assert(slice.len == self.size);
 
         std.mem.writeInt(
@@ -444,6 +444,7 @@ pub const Cell = struct {
             .little,
         );
 
+        // @Perf @Storage This can be avoided for internal nodes
         const left_child = std.mem.readInt(
             muscle.PageNumber,
             slice[@sizeOf(u16)..][0..@sizeOf(muscle.PageNumber)],
@@ -451,6 +452,7 @@ pub const Cell = struct {
         );
 
         // @Perf we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
+        // @Storage Is size even needed? it's just length of content + left child anyways
         return Cell{
             .size = cell_size,
             .left_child = left_child,
@@ -470,19 +472,16 @@ pub const Cell = struct {
         if (is_internal_page_cell) {
             key_slice = self.content;
         } else {
-            switch (key_data_type) {
-                .int, .real => {
-                    key_slice = self.content[0..@sizeOf(i64)];
-                },
-                .bin, .txt => {
-                    const len = std.mem.readInt(u16, self.content[0..@sizeOf(u16)], .little);
-                    key_slice = self.content[0..(@sizeOf(u16) + len)];
-                },
+            const encoded_len = switch (key_data_type) {
+                .int, .real => @sizeOf(i64),
+                .bin, .txt => @sizeOf(u16) + @as(usize, std.mem.readInt(u16, self.content[1 .. 1 + @sizeOf(u16)], .little)),
                 .bool => {
                     // we don't support bool as primary key
                     unreachable;
                 },
-            }
+            };
+
+            key_slice = self.content[0 .. 1 + encoded_len]; // present marker + typed payload
         }
 
         assert(key_slice.len <= INTERNAL_CELL_CONTENT_SIZE_LIMIT);

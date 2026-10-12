@@ -266,11 +266,11 @@ pub const Muscle = struct {
                     // for text and binaries we have a limit on length
                     .txt, .bin => |len| {
                         // for text we store len as first param
-                        if (len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(u16)) {
+                        if (len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - 1 - @sizeOf(u16)) {
                             try context.set_err(
                                 error.PrimaryKeyMaxLengthExceeded,
                                 "Primary key column length cannot exceed {d}",
-                                .{page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - @sizeOf(u16)},
+                                .{page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT - 1 - @sizeOf(u16)},
                             );
                             return error.PrimaryKeyMaxLengthExceeded;
                         }
@@ -387,9 +387,7 @@ pub const Muscle = struct {
                 } else if (column.not_null) {
                     return error.MissingValue;
                 } else {
-                    // use default value on column definition and serialize
-                    // @Todo
-                    unreachable;
+                    final_value_to_serialize = .null;
                 }
             } else {
                 final_value_to_serialize = value.?.value;
@@ -505,9 +503,7 @@ pub const Muscle = struct {
                 } else if (column.not_null) {
                     return error.MissingValue;
                 } else {
-                    // use default value on column definition and serialize
-                    // @Todo
-                    unreachable;
+                    final_value_to_serialize = .null;
                 }
             } else {
                 final_value_to_serialize = value.?.value;
@@ -658,53 +654,13 @@ pub const Muscle = struct {
                 print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page_types.Page.SlotArrayEntry) });
                 serial += 1;
 
-                var offset: usize = 0;
-                for (result_columns.items) |*column| {
-                    switch (column.data_type) {
-                        .bin, .txt => {
-                            const len = std.mem.readInt(u16, cell.content[offset..][0..@sizeOf(u16)], .little);
-
-                            {
-                                offset += @sizeOf(u16);
-                                if (len > 10) {
-                                    print("  {s}={s}...({d})", .{ column.name, cell.content[offset..][0..10], len });
-                                } else {
-                                    print("  {s}={s}", .{ column.name, cell.content[offset..][0..len] });
-                                }
-                            }
-
-                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + len)]);
-                            offset += len;
-                        },
-                        .int => {
-                            print("  {s}={}", .{
-                                column.name,
-                                std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little),
-                            });
-
-                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + @sizeOf(i64))]);
-                            offset += @sizeOf(i64);
-                        },
-                        .real => {
-                            print("  {s}={}", .{
-                                column.name,
-                                @as(f64, @bitCast(std.mem.readInt(i64, cell.content[offset..][0..@sizeOf(i64)], .little))),
-                            });
-
-                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + @sizeOf(i64))]);
-                            offset += @sizeOf(i64);
-                        },
-                        .bool => {
-                            print(
-                                "  {s}={any}",
-                                .{ column.name, if (cell.content[offset] == 1) true else false },
-                            );
-
-                            try row_bytes.appendSlice(context.arena, cell.content[offset..(offset + 1)]);
-                            offset += 1;
-                        },
-                    }
+                var encoded_row = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
+                for (result_columns.items) |column| {
+                    const value = try serde.deserialize_value(context, &table, cell.content, column.name);
+                    try serde.serialize_value(&encoded_row, value);
+                    print("  {s}={any}", .{ column.name, value });
                 }
+                try row_bytes.appendSlice(context.arena, encoded_row.const_slice());
 
                 row_bytes.shrinkAndFree(context.arena, row_bytes.items.len);
                 try result.rows.append(context.arena, row_bytes);
@@ -727,6 +683,7 @@ pub const Muscle = struct {
 
         std.debug.print("\n\n*****************************************************************\n\n", .{});
 
+        result.columns = result_columns;
         context.set_data(.{ .select = result });
     }
 

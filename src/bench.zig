@@ -108,8 +108,8 @@ pub fn main(init: std.process.Init) !void {
             if (result.rowCount() != query.count) return error.UnexpectedRowCount;
             if (query.count > 0) {
                 const rows = result.data.rows.items;
-                if (std.mem.readInt(i64, rows[0][0..8], .little) != query.first or
-                    std.mem.readInt(i64, rows[rows.len - 1][0..8], .little) != query.last)
+                if (std.mem.readInt(i64, rows[0][1..9], .little) != query.first or
+                    std.mem.readInt(i64, rows[rows.len - 1][1..9], .little) != query.last)
                     return error.UnexpectedRowContents;
             }
         }
@@ -162,7 +162,7 @@ fn batch(db: *muscle.database.Muscle, arena: *std.heap.ArenaAllocator, workload:
         const result = try execute(db, arena, query.sql);
         if (result.rowCount() != query.count) return error.UnexpectedRowCount;
         // Consume every returned key, keeping query work observable.
-        for (result.data.rows.items) |row| checksum +%= @bitCast(std.mem.readInt(i64, row[0..8], .little));
+        for (result.data.rows.items) |row| checksum +%= @bitCast(std.mem.readInt(i64, row[1..9], .little));
     }
     return checksum;
 }

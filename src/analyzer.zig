@@ -115,12 +115,11 @@ fn analyze_expression(context: *muscle.QueryContext, table: *const muscle.Table,
             const left_type: ?muscle.DataType = try analyze_expression(context, table, op.left);
             const right_type: ?muscle.DataType = try analyze_expression(context, table, op.right);
 
-            if (left_type == null and right_type != null) {
-                try context.set_err(error.AnalyzerError, "left and right don't result into same data type for binary operation.", .{});
-                return error.AnalyzerError;
-            } else if (right_type == null and left_type != null) {
-                try context.set_err(error.AnalyzerError, "left and right don't result into same data type for binary operation.", .{});
-                return error.AnalyzerError;
+            if (left_type == null or right_type == null) {
+                return switch (op.operator) {
+                    .eq, .neq, .lt, .lte, .gt, .gte, .logical_and, .logical_or => .bool,
+                    .plus, .minus, .mul, .div => left_type orelse right_type,
+                };
             }
 
             if (@intFromEnum(left_type.?) != @intFromEnum(right_type.?)) {
@@ -147,29 +146,13 @@ fn analyze_expression(context: *muscle.QueryContext, table: *const muscle.Table,
             // .not applies to boolean
             return switch (op.operator) {
                 .plus, .minus => {
-                    // At this time i don't want to complicate stuff than it needs to be.
-                    // We can support this in future.
-                    unreachable;
-
-                    //if (try analyze_expression(context, table, op.operand)) |dt| {
-                    //    if (dt != .int or dt != .real) {
-                    //        try context.set_err(
-                    //            error.AnalyzerError,
-                    //            "Operand results into type {any} which is incompatible with operator {any}",
-                    //            .{ dt, op.operator },
-                    //        );
-                    //        return error.AnalyzerError;
-                    //    }
-
-                    //    return null;
-                    //} else {
-                    //    try context.set_err(
-                    //        error.AnalyzerError,
-                    //        "Operand results into type {any} which is incompatible with operator {any}",
-                    //        .{ dt, op.operator },
-                    //    );
-                    //    return error.AnalyzerError;
-                    //}
+                    const operand_type = try analyze_expression(context, table, op.operand);
+                    const data_type = operand_type orelse return null;
+                    if (data_type != .int and data_type != .real) {
+                        try context.set_err(error.AnalyzerError, "Arithmetic unary operator requires a numeric operand.", .{});
+                        return error.AnalyzerError;
+                    }
+                    return .real;
                 },
                 .not => {
                     if (try analyze_expression(context, table, op.operand)) |dt| {

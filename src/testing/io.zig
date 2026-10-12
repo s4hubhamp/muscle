@@ -103,5 +103,5 @@ test "database and journal reopen with Unicode paths longer than 128 bytes" {
     const result = try db.execute("select score from records where id = 7", arena.allocator());
     try std.testing.expect(result == .data);
     try std.testing.expectEqual(@as(usize, 1), result.rowCount());
-    try std.testing.expectEqual(@as(i64, 17), std.mem.readInt(i64, result.data.rows.items[0][0..8], .little));
+    try std.testing.expectEqual(@as(i64, 17), std.mem.readInt(i64, result.data.rows.items[0][1..9], .little));
 }

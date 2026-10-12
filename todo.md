@@ -2,6 +2,7 @@
 
 @Todo, TODO
 @Perf
+@Storage
 @Memory
 @Unsafe
 @Hack
@@ -38,8 +39,8 @@ Different Allocators for different usage patterns.
         1. DONE Support auto increment flag in parser
         2. W update create_table references everywhere.
     4. DONE Query plan creation.
-    5. Query plan optimization.
-    6. DONE Query plan execution. Volcano style query processing.
+    5. DONE Query plan execution. Volcano style query processing.
+    6. Query plan optimization.
 8. Update existing tests to select and check after insert, updates and deletes.
 9. Support null values! Use bitmaps.
 10. pagers get_page returns pointers instead copy of the page. have get_page and get_page_mut Reference counts are

@@ -82,14 +82,14 @@ pub const QueryResultV2 = union(enum) {
         for (result.rows.items, 0..) |row, row_index| {
             var offset: usize = 0;
             for (result.columns, widths, 0..) |column, *width, column_index| {
-                const value = try read_result_value(row, &offset, column.data_type);
+                const value = try muscle.common.serde.read_value(row, &offset, column.data_type);
                 const text = switch (value) {
                     .int => |number| try std.fmt.allocPrint(allocator, "{d}", .{number}),
                     .real => |number| try std.fmt.allocPrint(allocator, "{d}", .{number}),
                     .bool => |boolean| if (boolean) "true" else "false",
                     .txt => |text| try table_text(allocator, text),
                     .bin => |bytes| try std.fmt.allocPrint(allocator, "0x{x}", .{bytes}),
-                    .null => unreachable,
+                    .null => "NULL",
                 };
                 cells[row_index * result.columns.len + column_index] = text;
                 width.* = @max(width.*, text.len);
@@ -144,26 +144,6 @@ fn table_text(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
         }
     }
     return try output.toOwnedSlice();
-}
-
-fn read_result_bytes(row: []const u8, offset: *usize, len: usize) ![]const u8 {
-    if (offset.* > row.len or row.len - offset.* < len) return error.CorruptedData;
-    const bytes = row[offset.*..][0..len];
-    offset.* += len;
-    return bytes;
-}
-
-fn read_result_value(row: []const u8, offset: *usize, data_type: muscle.DataType) !muscle.Value {
-    return switch (data_type) {
-        .int => .{ .int = std.mem.readInt(i64, (try read_result_bytes(row, offset, 8))[0..8], .little) },
-        .real => .{ .real = @bitCast(std.mem.readInt(u64, (try read_result_bytes(row, offset, 8))[0..8], .little)) },
-        .bool => .{ .bool = (try read_result_bytes(row, offset, 1))[0] != 0 },
-        .txt, .bin => blk: {
-            const len = std.mem.readInt(u16, (try read_result_bytes(row, offset, 2))[0..2], .little);
-            const bytes = try read_result_bytes(row, offset, len);
-            break :blk if (data_type == .txt) .{ .txt = bytes } else .{ .bin = bytes };
-        },
-    };
 }
 
 pub const ResultColumn = struct {
