@@ -179,7 +179,7 @@ test "test tree operations on text primary key. Every leaf node can hold max one
     }
 }
 
-// tests previous bug wrt setting left and right pointers after new page creation
+// tests previous bug related to setting left and right pointers after new page creation
 test "regression test 1" {
     var file = try helpers.get_temp_file_path("test_stress_random_operations");
     defer file.deinit();
@@ -220,7 +220,7 @@ test "regression test 1" {
     }
 }
 
-// tests previous bug wrt divider keys
+// tests previous bug related to divider keys
 test "regression test 2" {
     var file = try helpers.get_temp_file_path("test_stress_random_operations");
     defer file.deinit();
@@ -263,228 +263,209 @@ test "regression test 2" {
 }
 
 test "stress test randomized operations on larger dataset" {
+    const seed = 0x6d7573636c65;
+    var phase: []const u8 = "setup";
+    var step: usize = 0;
+    errdefer std.debug.print("Stress failure: seed=0x{x}, phase={s}, step={d}\n", .{ seed, phase, step });
+    var random = std.Random.DefaultPrng.init(seed);
+    const rng = random.random();
     var file = try helpers.get_temp_file_path("test_stress_random_operations_large");
     defer file.deinit();
 
-    var gpa = std.heap.DebugAllocator(.{}){};
-    const allocator = gpa.allocator();
-    var db = try Muscle.init(allocator, file.file_path);
+    const Stress = struct {
+        const Self = @This();
+        const Row = struct {
+            key: [2023]u8,
+            integer: i64,
+            real: f64,
+            text: [500]u8,
+            text_len: usize,
+        };
+        database: ?Muscle,
+        arena: std.heap.ArenaAllocator,
+        rows: std.ArrayList(Row) = .empty,
+        serial: usize = 0,
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-
-    const table_name = "large_stress_test";
-
-    try expect_success(try db.execute("create table large_stress_test (pk TEXT(2023) PRIMARY KEY, int_val INT, real_val REAL, text_val TEXT(500))", arena.allocator()));
-
-    const get_insert_sql = struct {
-        fn f(alloc: std.mem.Allocator, pk: []const u8, int_val: i64, real_val: f64, text_val: []const u8) ![]const u8 {
-            // Generated keys and text contain only ASCII letters.
-            return std.fmt.allocPrint(alloc, "INSERT INTO large_stress_test (pk, int_val, real_val, text_val) VALUES ('{s}', {d}, {d}, '{s}')", .{ pk, int_val, real_val, text_val });
+        fn db(self: *Self) *Muscle {
+            return &self.database.?;
         }
-    }.f;
 
-    const rng_impl: std.Random.IoSource = .{ .io = std.testing.io };
-    const rng = rng_impl.interface();
-    var inserted_keys = std.ArrayList([2023]u8).empty;
-    var text_buffer: [500]u8 = undefined;
+        fn allocator(self: *Self) std.mem.Allocator {
+            // Results and metadata never outlive an operation/checkpoint.
+            _ = self.arena.reset(.retain_capacity);
+            return self.arena.allocator();
+        }
 
-    // std.debug.print("Phase 1: Inserting 2000 random entries...\n", .{});
+        fn payload(row: *Row, rand: std.Random) void {
+            // SQL unary minus currently produces REAL. INT payloads stay positive.
+            row.integer = @intCast(rand.int(u63));
+            // Eighths round-trip exactly through decimal SQL and binary floats.
+            row.real = @as(f64, @floatFromInt(rand.uintLessThan(u32, 8000))) / 8.0;
+            row.text_len = rand.uintAtMost(usize, 500);
+            for (row.text[0..row.text_len]) |*byte| byte.* = 'a' + rand.uintLessThan(u8, 26);
+        }
+
+        fn affected(result: muscle.query_result.QueryResult) !void {
+            try expect_success(result);
+            try std.testing.expectEqual(@as(usize, 1), result.columnCount());
+            try std.testing.expectEqual(@as(usize, 1), result.rowCount());
+            var offset: usize = 0;
+            const count = try serde.read_value(result.data.rows.items[0], &offset, .int);
+            try std.testing.expectEqual(@as(i64, 1), count.int);
+            try std.testing.expectEqual(result.data.rows.items[0].len, offset);
+        }
+
+        fn insert(self: *Self, rand: std.Random, ordered: bool) !void {
+            var row: Row = undefined;
+            for (&row.key) |*byte| byte.* = if (ordered) 'Z' else 'A' + rand.uintLessThan(u8, 26);
+            // A unique base-26 suffix prevents collisions, including across phases.
+            // Ordered inserts share a prefix and therefore arrive in key order.
+            var serial = self.serial;
+            for (0..16) |i| {
+                row.key[row.key.len - 1 - i] = 'A' + @as(u8, @intCast(serial % 26));
+                serial /= 26;
+            }
+            payload(&row, rand);
+            const alloc = self.allocator();
+            const sql = try std.fmt.allocPrint(alloc, "INSERT INTO large_stress_test (pk, int_val, real_val, text_val) VALUES ('{s}', {d}, {d:.3}, '{s}')", .{ row.key, row.integer, row.real, row.text[0..row.text_len] });
+            try affected(try self.db().execute(sql, alloc));
+            // Update the reference model only after database success.
+            try self.rows.append(std.testing.allocator, row);
+            self.serial += 1;
+        }
+
+        fn update(self: *Self, rand: std.Random, index: usize) !void {
+            var row = self.rows.items[index];
+            payload(&row, rand);
+            const alloc = self.allocator();
+            const sql = try std.fmt.allocPrint(alloc, "UPDATE large_stress_test SET int_val = {d}, real_val = {d:.3}, text_val = '{s}' WHERE pk = '{s}'", .{ row.integer, row.real, row.text[0..row.text_len], row.key });
+            try affected(try self.db().execute(sql, alloc));
+            self.rows.items[index] = row;
+        }
+
+        fn delete(self: *Self, index: usize) !void {
+            const key = self.rows.items[index].key;
+            try delete_text_key(self.db(), self.allocator(), "large_stress_test", &key);
+            _ = self.rows.swapRemove(index);
+        }
+
+        fn lessThan(_: void, left: *const Row, right: *const Row) bool {
+            return std.mem.order(u8, &left.key, &right.key) == .lt;
+        }
+
+        fn validate(self: *Self) !void {
+            const alloc = self.allocator();
+            var metadata = try self.db().select_table_info("large_stress_test", alloc);
+            try validate_btree(&metadata);
+            try std.testing.expectEqual(self.rows.items.len, metadata.btree_leaf_cells);
+            if (self.rows.items.len == 0) try std.testing.expectEqual(@as(u16, 1), metadata.btree_height);
+
+            const expected = try alloc.alloc(*const Row, self.rows.items.len);
+            for (self.rows.items, expected) |*row, *pointer| pointer.* = row;
+            std.mem.sort(*const Row, expected, {}, lessThan);
+            const selected = try self.db().execute("SELECT pk, int_val, real_val, text_val FROM large_stress_test", alloc);
+            try expect_success(selected);
+            try std.testing.expectEqual(@as(usize, 4), selected.columnCount());
+            try std.testing.expectEqual(expected.len, selected.rowCount());
+            for (expected, selected.data.rows.items) |row, encoded| {
+                var offset: usize = 0;
+                try std.testing.expectEqualStrings(&row.key, (try serde.read_value(encoded, &offset, .{ .txt = 2023 })).txt);
+                try std.testing.expectEqual(row.integer, (try serde.read_value(encoded, &offset, .int)).int);
+                try std.testing.expectEqual(row.real, (try serde.read_value(encoded, &offset, .real)).real);
+                try std.testing.expectEqualStrings(row.text[0..row.text_len], (try serde.read_value(encoded, &offset, .{ .txt = 500 })).txt);
+                try std.testing.expectEqual(encoded.len, offset);
+            }
+        }
+
+        fn reopen(self: *Self, path: []const u8) !void {
+            self.db().deinit();
+            self.database = null;
+            self.database = try Muscle.init(std.testing.allocator, path);
+            try self.validate();
+        }
+
+        fn deinit(self: *Self) void {
+            if (self.database) |*database_instance| database_instance.deinit();
+            self.rows.deinit(std.testing.allocator);
+            self.arena.deinit();
+        }
+    };
+
+    var stress = Stress{
+        .database = try Muscle.init(std.testing.allocator, file.file_path),
+        .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+    };
+    defer stress.deinit();
+    try expect_success(try stress.db().execute("CREATE TABLE large_stress_test (pk TEXT(2023) PRIMARY KEY, int_val INT, real_val REAL, text_val TEXT(500))", stress.allocator()));
+
+    phase = "random inserts";
     for (0..2000) |i| {
-        var key: [2023]u8 = undefined;
-        for (&key) |*char| {
-            char.* = 'A' + rng.uintLessThan(u8, 26);
-        }
-
-        // Generate random text value
-        const text_len = rng.uintLessThan(usize, 400) + 100; // 100-499 chars
-        for (text_buffer[0..text_len]) |*char| {
-            char.* = 'a' + rng.uintLessThan(u8, 26);
-        }
-
-        // Check if key exists
-        var exists = false;
-        for (inserted_keys.items) |existing_key| {
-            if (std.mem.eql(u8, &existing_key, &key)) {
-                exists = true;
-                break;
-            }
-        }
-
-        const insert_response = try db.execute(try get_insert_sql(
-            arena.allocator(),
-            &key,
-            @as(i64, rng.int(u63)),
-            rng.float(f64),
-            text_buffer[0..text_len],
-        ), arena.allocator());
-
-        if (exists) {
-            assert(insert_response.is_error_result());
-            assert(insert_response.err.code == error.DuplicateKey);
-        } else {
-            try expect_success(insert_response);
-            try inserted_keys.append(arena.allocator(), key);
-
-            // Validate every 100 insertions
-            if (i % 100 == 0) {
-                var metadata = try db.select_table_info(table_name, arena.allocator());
-                try validate_btree(&metadata);
-            }
-        }
+        step = i;
+        try stress.insert(rng, false);
+        if ((i + 1) % 100 == 0) try stress.validate();
     }
+    try std.testing.expectEqual(@as(usize, 2000), stress.rows.items.len);
 
-    // std.debug.print("Phase 1 complete: {} unique keys inserted\n", .{inserted_keys.items.len});
-    // std.debug.print("Phase 2: Random updates...\n", .{});
-    for (0..inserted_keys.items.len) |i| {
-        if (inserted_keys.items.len == 0) break;
-
-        const random_index = rng.uintLessThan(usize, inserted_keys.items.len);
-        const key_to_update = inserted_keys.items[random_index];
-
-        // Generate new random values for the update
-        const text_len = rng.uintLessThan(usize, 400) + 100; // 100-499 chars
-        for (text_buffer[0..text_len]) |*char| {
-            char.* = 'a' + rng.uintLessThan(u8, 26);
-        }
-
-        const update_sql = try std.fmt.allocPrint(arena.allocator(), "UPDATE large_stress_test SET int_val = {d}, real_val = {d}, text_val = '{s}' WHERE pk = '{s}'", .{ @as(i64, rng.int(u63)), rng.float(f64), text_buffer[0..text_len], key_to_update });
-        const update_response = try db.execute(update_sql, arena.allocator());
-        try expect_success(update_response);
-        try std.testing.expectEqual(@as(usize, 1), update_response.rowCount());
-        var offset: usize = 0;
-        const affected = try serde.read_value(update_response.data.rows.items[0], &offset, .int);
-        try std.testing.expectEqual(@as(i64, 1), affected.int);
-
-        // Validate every 100 updates
-        if (i % 100 == 0) {
-            var metadata = try db.select_table_info(table_name, arena.allocator());
-            try validate_btree(&metadata);
-        }
+    phase = "update every row";
+    rng.shuffle(Stress.Row, stress.rows.items);
+    for (0..stress.rows.items.len) |i| {
+        step = i;
+        try stress.update(rng, i);
+        if ((i + 1) % 100 == 0) try stress.validate();
     }
+    try stress.validate();
 
-    // std.debug.print("Phase 2 complete: {} keys updated\n", .{inserted_keys.items.len});
-    // std.debug.print("Phase 2: Random deletions...\n", .{});
-    const delete_count = inserted_keys.items.len / 3;
-    var deleted_count: usize = 0;
-
+    phase = "random deletes";
+    const delete_count = stress.rows.items.len / 3;
     for (0..delete_count) |i| {
-        if (inserted_keys.items.len == 0) break;
-
-        const random_index = rng.uintLessThan(usize, inserted_keys.items.len);
-        const key_to_delete = inserted_keys.swapRemove(random_index);
-
-        try delete_text_key(&db, arena.allocator(), table_name, &key_to_delete);
-
-        deleted_count += 1;
-
-        // Validate every 50 deletions
-        if (i % 50 == 0) {
-            var metadata = try db.select_table_info(table_name, arena.allocator());
-            try validate_btree(&metadata);
-        }
+        step = i;
+        try stress.delete(rng.uintLessThan(usize, stress.rows.items.len));
+        if ((i + 1) % 50 == 0) try stress.validate();
     }
+    try std.testing.expectEqual(2000 - delete_count, stress.rows.items.len);
+    try stress.validate();
 
-    // std.debug.print("Phase 3 complete: {} keys deleted, {} keys remaining\n", .{ deleted_count, inserted_keys.items.len });
-    // std.debug.print("Phase 4: Mixed operations...\n", .{});
+    phase = "mixed inserts updates deletes";
+    var operations = [_]usize{0} ** 3;
     for (0..1000) |i| {
-        const operation = rng.uintLessThan(u8, 3); // 0=insert, 1=delete, 2=insert
-
-        if (operation == 1 and inserted_keys.items.len > 100) {
-            // Delete operation
-            const random_index = rng.uintLessThan(usize, inserted_keys.items.len);
-            const key_to_delete = inserted_keys.swapRemove(random_index);
-
-            try delete_text_key(&db, arena.allocator(), table_name, &key_to_delete);
-        } else {
-            // Insert operation
-            var key: [2023]u8 = undefined;
-            for (&key) |*char| {
-                char.* = 'A' + rng.uintLessThan(u8, 26);
-            }
-
-            // Generate random text value
-            const text_len = rng.uintLessThan(usize, 400) + 100;
-            for (text_buffer[0..text_len]) |*char| {
-                char.* = 'a' + rng.uintLessThan(u8, 26);
-            }
-
-            // Check if key exists
-            var exists = false;
-            for (inserted_keys.items) |existing_key| {
-                if (std.mem.eql(u8, &existing_key, &key)) {
-                    exists = true;
-                    break;
-                }
-            }
-
-            const insert_response = try db.execute(try get_insert_sql(
-                arena.allocator(),
-                &key,
-                @as(i64, rng.int(u63)),
-                rng.float(f64),
-                text_buffer[0..text_len],
-            ), arena.allocator());
-
-            if (exists) {
-                assert(insert_response.is_error_result());
-                assert(insert_response.err.code == error.DuplicateKey);
-            } else {
-                try expect_success(insert_response);
-                try inserted_keys.append(arena.allocator(), key);
-            }
+        step = i;
+        const operation = rng.uintLessThan(usize, operations.len);
+        operations[operation] += 1;
+        switch (operation) {
+            0 => try stress.insert(rng, false),
+            1 => try stress.update(rng, rng.uintLessThan(usize, stress.rows.items.len)),
+            2 => try stress.delete(rng.uintLessThan(usize, stress.rows.items.len)),
+            else => unreachable,
         }
-
-        // Validate every 100 operations
-        if (i % 100 == 0) {
-            var metadata = try db.select_table_info(table_name, arena.allocator());
-            try validate_btree(&metadata);
-        }
+        if ((i + 1) % 100 == 0) try stress.validate();
     }
+    for (operations) |count| try std.testing.expect(count > 0);
+    const after_mixed = stress.rows.items.len;
 
-    // std.debug.print("Phase 4 complete: {} keys remaining\n", .{inserted_keys.items.len});
-    // std.debug.print("Phase 5: Rapid insertions stress test...\n", .{});
+    phase = "ordered inserts";
     for (0..500) |i| {
-        var key: [2023]u8 = undefined;
-        // Use a more predictable pattern to ensure uniqueness
-        const base_char = 'A' + @as(u8, @intCast(i % 26));
-        for (&key, 0..) |*char, j| {
-            char.* = base_char + @as(u8, @intCast((j + i) % 26));
-        }
-
-        const text_len = 200;
-        for (text_buffer[0..text_len]) |*char| {
-            char.* = 'z' - @as(u8, @intCast(i % 26));
-        }
-
-        const insert_response = try db.execute(try get_insert_sql(
-            arena.allocator(),
-            &key,
-            @as(i64, @intCast(i)),
-            @as(f64, @floatFromInt(i)) * 3.14159,
-            text_buffer[0..text_len],
-        ), arena.allocator());
-
-        if (!insert_response.is_error_result()) {
-            try inserted_keys.append(arena.allocator(), key);
-        }
-
-        // Validate every 50 insertions
-        if (i % 50 == 0) {
-            var metadata = try db.select_table_info(table_name, arena.allocator());
-            try validate_btree(&metadata);
-        }
+        step = i;
+        try stress.insert(rng, true);
+        if ((i + 1) % 50 == 0) try stress.validate();
     }
+    try std.testing.expectEqual(after_mixed + 500, stress.rows.items.len);
+    phase = "reopen populated tree";
+    try stress.reopen(file.file_path);
 
-    // Final comprehensive validation
-    var final_metadata = try db.select_table_info(table_name, arena.allocator());
-    try validate_btree(&final_metadata);
-
-    arena.deinit();
-    db.deinit();
-    const deinit_status = gpa.deinit();
-    if (deinit_status == .leak) {
-        @panic("LEAK DETECTED");
+    phase = "delete to empty tree";
+    step = 0;
+    while (stress.rows.items.len > 0) : (step += 1) {
+        try stress.delete(rng.uintLessThan(usize, stress.rows.items.len));
+        if (stress.rows.items.len % 100 == 0) try stress.validate();
     }
+    phase = "reopen empty tree and reuse pages";
+    try stress.reopen(file.file_path);
+    for (0..50) |i| {
+        step = i;
+        try stress.insert(rng, false);
+    }
+    try stress.validate();
+    try stress.reopen(file.file_path);
 }
 
 fn delete_text_key(db: *Muscle, allocator: std.mem.Allocator, table_name: []const u8, key: []const u8) !void {

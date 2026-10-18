@@ -125,7 +125,7 @@ pub const Muscle = struct {
         }
 
         if (should_rollback) {
-            logger.warn("Processing failed. Calling Rollback.", .{});
+            logger.warn("Processing failed. Calling Rollback. {f}", .{context.result});
 
             self.rollback_and_refresh() catch |rollback_err| {
                 // If rollback fails, this is a critical system error
@@ -441,6 +441,16 @@ pub const SelectDatabaseMetadataResult = struct {
     n_free_pages: u32,
     first_free_page: u32,
     free_pages: muscle.common.BoundedArray(muscle.PageNumber, 128),
+
+    pub fn print(self: *const SelectDatabaseMetadataResult) void {
+        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%     Metadata    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
+
+        std.debug.print("Tatal Pages:       {}\n", .{self.n_total_pages});
+        std.debug.print("Free Pages:        {}\n\n", .{self.n_free_pages});
+        std.debug.print("First Free Page:   {}\n", .{self.first_free_page});
+
+        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   End Metadata  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
+    }
 };
 
 test {
