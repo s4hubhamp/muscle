@@ -11,6 +11,7 @@ const errors = muscle.common.errors;
 const page_types = muscle.page_types;
 const PageManager = muscle.PageManager;
 const BoundedArray = muscle.common.BoundedArray;
+const serde = muscle.common.serde;
 
 // The database object. This is main API to interact with the database.
 pub const Muscle = struct {
@@ -23,7 +24,7 @@ pub const Muscle = struct {
         errdefer pager.deinit();
 
         // call rollback to sync if we had crashed earlier
-        logger.info("Calling Rollback after instance start.\n", .{});
+        logger.info("Calling Rollback after instance start.", .{});
         try pager.rollback();
 
         // rollback could update catalog hence we init it after rollback
@@ -72,6 +73,8 @@ pub const Muscle = struct {
                                 try maybe_create_client_error_response(&context, err);
                                 break :execution;
                             };
+                            try context.set_result_columns(&.{.{ .name = "Status", .data_type = .{ .txt = 0 } }});
+                            try context.append_data(try serde.serialize(.{ .txt = "Table created." }, context.arena));
                         },
                         else => unreachable,
                     }

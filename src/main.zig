@@ -1,5 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const muscle = @import("muscle");
+
+const logger = std.log.scoped(.main);
 
 const max_query_bytes = 1024 * 1024;
 
@@ -35,7 +38,12 @@ pub fn main(init: std.process.Init) !void {
     const address = try std.Io.net.IpAddress.parse(host, port);
     var listener = try address.listen(init.io, .{ .reuse_address = true });
     defer listener.deinit(init.io);
-    std.debug.print("MuscleDB listening on {f}; POST /query (database: {s})\n", .{ address, absolute_path });
+    const process_id = switch (builtin.os.tag) {
+        .windows => std.os.windows.GetCurrentProcessId(),
+        .linux => std.os.linux.getpid(),
+        else => std.c.getpid(),
+    };
+    logger.info("MuscleDB listening on {f}; POST /query (PID: {d}, database: {s}).", .{ address, process_id, absolute_path });
 
     // One database owner serializes queries and commits.
     while (true) {

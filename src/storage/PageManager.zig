@@ -50,7 +50,7 @@ dirty_pages: BoundedArray(PageNumber, MAX_DIRTY_COUNT_BEFORE_COMMIT),
 journal: Journal,
 
 pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageManager {
-    logger.info("Opening Database file.\n", .{});
+    logger.info("Opening Database file.", .{});
     var io = try IO.init(allocator, database_file_path);
     errdefer io.deinit();
     // try to read metadata page
@@ -59,7 +59,7 @@ pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageM
     const bytes_read = try io.read(0, &metadata_buffer);
 
     if (bytes_read == 0) {
-        logger.info("Initializing metadata for the first time.\n", .{});
+        logger.info("Initializing metadata for the first time.", .{});
         const initial_metadata = DBMetadataPage.init();
         const bytes = try initial_metadata.to_bytes();
         for (&bytes, 0..bytes.len) |*item, i| metadata_buffer[i] = item.*;
@@ -152,7 +152,7 @@ pub fn rollback(self: *PageManager) !void {
     try self.journal.clear();
     // Cached pages may still contain the changes that were just rolled back.
     self.cache.cache.clearRetainingCapacity();
-    logger.info("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
+    logger.info("Rollback Completed. Reverted {} pages.", .{n_reverted});
 }
 
 fn mark_dirty(self: *PageManager, page_number: PageNumber) !void {
