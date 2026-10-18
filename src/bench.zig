@@ -145,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
     try std.Io.File.stdout().writeStreamingAll(init.io, "\n");
 }
 
-fn execute(db: *muscle.database.Muscle, arena: *std.heap.ArenaAllocator, sql: []const u8) !muscle.query_result.QueryResultV2 {
+fn execute(db: *muscle.database.Muscle, arena: *std.heap.ArenaAllocator, sql: []const u8) !muscle.query_result.QueryResult {
     _ = arena.reset(.retain_capacity);
     const result = try db.execute(sql, arena.allocator());
     if (result == .err) {

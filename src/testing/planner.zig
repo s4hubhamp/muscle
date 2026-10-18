@@ -374,3 +374,68 @@ test "resolve nested expressions" {
         resolve_expression(context, table, "", empty_nested),
     );
 }
+
+test "DELETE plan chooses sources and completes exactly once" {
+    const fixture = try @import("helpers.zig").DatabaseFixture.init();
+    defer fixture.deinit();
+    try std.testing.expect((try fixture.db.execute("create table records (id int primary key, score int)", fixture.allocator())) == .data);
+    const cases = [_]struct { sql: []const u8, source: std.meta.Tag(muscle.planner.Plan), predicate: bool = true }{
+        .{ .sql = "delete from records where id = 2", .source = .exact_match },
+        .{ .sql = "delete from records where 2 = id", .source = .exact_match },
+        .{ .sql = "delete from records where id >= 2 and id < 10", .source = .range_scan },
+        .{ .sql = "delete from records where score = 2", .source = .filter },
+        .{ .sql = "delete from records where id = 2 or id = 3", .source = .logical_or_scan },
+        .{ .sql = "delete from records", .source = .seq_scan, .predicate = false },
+    };
+    for (cases) |case| {
+        const context = &fixture.query.context;
+        context.input = case.sql;
+        var parser = Parser.init(context);
+        const statements = try parser.parse();
+        try muscle.analyzer.analyze(context, statements);
+        const plans = try muscle.planner.make_plans(context, statements);
+        try std.testing.expectEqual(@as(usize, 1), plans.len);
+        try std.testing.expect(plans[0] == .delete);
+        const delete = &plans[0].delete;
+        try std.testing.expectEqualStrings("records", delete.table_name);
+        try std.testing.expectEqual(case.predicate, delete.where != null);
+        try std.testing.expectEqual(case.source, std.meta.activeTag(delete.source.*));
+        const count = (try delete.next()).?;
+        var offset: usize = 0;
+        try std.testing.expectEqual(@as(i64, 0), (try muscle.common.serde.read_value(count, &offset, .int)).int);
+        try std.testing.expectEqual(@as(?muscle.page_types.EncodedCellContent, null), try delete.next());
+    }
+}
+
+test "DELETE populated plan returns its count once and preserves unmatched rows" {
+    const fixture = try @import("helpers.zig").DatabaseFixture.init();
+    defer fixture.deinit();
+    const allocator = fixture.allocator();
+    try std.testing.expect((try fixture.db.execute("create table records (id int primary key, score int)", allocator)) == .data);
+    for ([_][]const u8{
+        "insert into records (score) values (10)",
+        "insert into records (score) values (20)",
+        "insert into records (score) values (30)",
+    }) |sql| try std.testing.expect((try fixture.db.execute(sql, allocator)) == .data);
+    const context = &fixture.query.context;
+    context.input = "delete from records where id >= 2";
+    var parser = Parser.init(context);
+    const statements = try parser.parse();
+    try muscle.analyzer.analyze(context, statements);
+    const plans = try muscle.planner.make_plans(context, statements);
+    const delete = &plans[0].delete;
+    const count = (try delete.next()).?;
+    var offset: usize = 0;
+    try std.testing.expectEqual(@as(i64, 2), (try muscle.common.serde.read_value(count, &offset, .int)).int);
+    // Direct plan execution does not commit; finish it before issuing new SQL.
+    try fixture.db.pager.commit(true);
+    try std.testing.expect((try fixture.db.execute("insert into records (score) values (40)", allocator)) == .data);
+    try std.testing.expectEqual(@as(?muscle.page_types.EncodedCellContent, null), try delete.next());
+    const remaining = try fixture.db.execute("select id from records", allocator);
+    try std.testing.expect(remaining == .data);
+    try std.testing.expectEqual(@as(usize, 2), remaining.rowCount());
+    for ([_]i64{ 1, 4 }, remaining.data.rows.items) |expected, row| {
+        offset = 0;
+        try std.testing.expectEqual(expected, (try muscle.common.serde.read_value(row, &offset, .int)).int);
+    }
+}

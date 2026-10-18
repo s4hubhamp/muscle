@@ -3,13 +3,13 @@ const muscle = @import("./muscle.zig");
 const query_result = @import("query_result.zig");
 const QueryContext = @import("QueryContext.zig");
 
-const print = std.debug.print;
+const logger = std.log.scoped(.executor);
+
 const assert = std.debug.assert;
 const BTree = muscle.BTree;
 const errors = muscle.common.errors;
 const page_types = muscle.page_types;
 const PageManager = muscle.PageManager;
-const serde = muscle.common.serde;
 const BoundedArray = muscle.common.BoundedArray;
 
 // The database object. This is main API to interact with the database.
@@ -23,7 +23,7 @@ pub const Muscle = struct {
         errdefer pager.deinit();
 
         // call rollback to sync if we had crashed earlier
-        print("Calling Rollback after instance start.\n", .{});
+        logger.info("Calling Rollback after instance start.\n", .{});
         try pager.rollback();
 
         // rollback could update catalog hence we init it after rollback
@@ -37,28 +37,28 @@ pub const Muscle = struct {
         self.catalog.deinit();
     }
 
-    pub fn execute(self: *Muscle, query: []const u8, arena: std.mem.Allocator) !query_result.QueryResultV2 {
+    pub fn execute(self: *Muscle, query: []const u8, arena: std.mem.Allocator) !query_result.QueryResult {
         var context = QueryContext.init(arena, query, &self.pager, &self.catalog);
         var is_update_query = false;
         var should_rollback = false;
         errdefer if (is_update_query) {
-            self.rollback_and_refresh() catch |err| print("Failed to roll back query: {any}\n", .{err});
+            self.rollback_and_refresh() catch |err| logger.err("Failed to roll back query: {any}\n", .{err});
         };
 
         var parser = muscle.Parser.init(&context);
         const statements = parser.parse() catch |err| {
             try maybe_create_client_error_response(&context, err);
-            return context.resultV2;
+            return context.result;
         };
 
         muscle.analyzer.analyze(&context, statements) catch |err| {
             try maybe_create_client_error_response(&context, err);
-            return context.resultV2;
+            return context.result;
         };
 
         const plans = muscle.planner.make_plans(&context, statements) catch |err| {
             try maybe_create_client_error_response(&context, err);
-            return context.resultV2;
+            return context.result;
         };
 
         execution: for (plans) |*plan| {
@@ -93,7 +93,7 @@ pub const Muscle = struct {
                         should_rollback = true;
                         try maybe_create_client_error_response(&context, err);
                         break :execution;
-                    }) |row| try context.append_data(row);
+                    }) |rows_created| try context.append_data(rows_created);
                 },
 
                 .update => |*update_plan| {
@@ -103,7 +103,17 @@ pub const Muscle = struct {
                         should_rollback = true;
                         try maybe_create_client_error_response(&context, err);
                         break :execution;
-                    }) |row| try context.append_data(row);
+                    }) |rows_affected| try context.append_data(rows_affected);
+                },
+
+                .delete => |*delete_plan| {
+                    is_update_query = true;
+                    try context.set_result_columns(&.{.{ .name = "rows_affected", .data_type = .int }});
+                    if (delete_plan.next() catch |err| {
+                        should_rollback = true;
+                        try maybe_create_client_error_response(&context, err);
+                        break :execution;
+                    }) |rows_affected| try context.append_data(rows_affected);
                 },
 
                 .seq_scan => {
@@ -114,33 +124,22 @@ pub const Muscle = struct {
             }
         }
 
-        // for (statements) |statement| {
-        //     switch (statement) {
-        //         .create_table => |payload| {
-        //             self.create_table(&context, payload) catch |err| {
-        //                 try maybe_create_client_error_response(&context, err);
-        //             };
-        //         },
-        //         else => unreachable,
-        //     }
-        // }
-
         if (should_rollback) {
-            print("Processing failed. Calling Rollback.\n", .{});
+            logger.warn("Processing failed. Calling Rollback.", .{});
+
             self.rollback_and_refresh() catch |rollback_err| {
                 // If rollback fails, this is a critical system error
-                print("CRITICAL FAILURE: Rollback failed: {any}\n", .{rollback_err});
-                //@panic("Database in inconsistent state - rollback failed");
-                return rollback_err;
+                logger.err("rollback failure: {any}\n", .{rollback_err});
+                @panic("Unexpected rollback failure");
             };
         } else if (is_update_query) {
             self.pager.commit(true) catch |commit_err| {
-                print("CRITICAL FAILURE: commit failed. {any}\n", .{commit_err});
-                return commit_err;
+                logger.err("commit failure: {any}\n", .{commit_err});
+                @panic("Unexpected commit failure");
             };
         }
 
-        return context.resultV2;
+        return context.result;
     }
 
     fn rollback_and_refresh(self: *Muscle) !void {
@@ -148,76 +147,6 @@ pub const Muscle = struct {
         const catalog = try muscle.Catalog_Manager.init(self.allocator, &self.pager);
         self.catalog.deinit();
         self.catalog = catalog;
-    }
-
-    pub fn execute_query(self: *Muscle, query: Query, arena: std.mem.Allocator) !query_result.QueryResult {
-        var context = QueryContext.init(arena, "", &self.pager, &self.catalog);
-
-        var is_update_query = false;
-        var should_rollback = false;
-
-        switch (query) {
-            Query.drop_table => |payload| {
-                is_update_query = true;
-                self.drop_table(&context, payload) catch |err| {
-                    should_rollback = true;
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
-            Query.insert => |payload| {
-                is_update_query = true;
-                self.insert(&context, payload) catch |err| {
-                    should_rollback = true;
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
-            Query.update => |payload| {
-                is_update_query = true;
-                self.update(&context, payload) catch |err| {
-                    should_rollback = true;
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
-            Query.delete => |payload| {
-                is_update_query = true;
-                self.delete(&context, payload) catch |err| {
-                    should_rollback = true;
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
-            Query.select => |payload| {
-                self.select(&context, payload) catch |err| {
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
-            Query.select_table_info => |payload| {
-                self.select_table_info(&context, payload) catch |err| {
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
-            Query.select_database_info => {
-                self.select_database_info(&context) catch |err| {
-                    try maybe_create_client_error_response(&context, err);
-                };
-            },
-        }
-
-        if (should_rollback) {
-            print("Processing failed. Calling Rollback.\n", .{});
-            self.pager.rollback() catch |rollback_err| {
-                // If rollback fails, this is a critical system error
-                print("CRITICAL FAILURE: Rollback failed: {any}\n", .{rollback_err});
-                //@panic("Database in inconsistent state - rollback failed");
-                return rollback_err;
-            };
-        } else if (is_update_query) {
-            self.pager.commit(true) catch |commit_err| {
-                print("CRITICAL FAILURE: commit failed. {any}\n", .{commit_err});
-                return commit_err;
-            };
-        }
-
-        return context.result;
     }
 
     // gracefully resolves client errors and creates error QueryResult
@@ -324,378 +253,14 @@ pub const Muscle = struct {
         try context.catalog.create_table(context.pager, new_table);
     }
 
-    fn drop_table(self: *Muscle, context: *QueryContext, payload: DropTablePayload) !void {
-        _ = self;
-        _ = context;
-        _ = payload;
-
-        unreachable;
-    }
-
-    fn insert(self: *Muscle, context: *QueryContext, payload: InsertPayload) !void {
-        _ = self;
-
-        const table = try if (context.catalog.find_table(payload.table_name)) |t|
-            t.clone(context.arena)
-        else
-            error.TableNotFound;
-
-        const find_value = struct {
-            fn f(
-                column_name: []const u8,
-                values: []const InsertPayload.Value,
-            ) ?*const InsertPayload.Value {
-                for (values) |*val| {
-                    if (std.mem.eql(u8, val.column_name, column_name)) return val;
-                }
-
-                return null;
-            }
-        }.f;
-
-        // check for columns and duplicates
-        if (payload.values.len > 1) {
-            for (payload.values, 0..) |*v1, i| {
-                if (!table.columns.contains(v1.column_name)) return error.ColumnDoesNotExist;
-
-                for (payload.values[i + 1 ..]) |*v2| {
-                    if (std.mem.eql(u8, v1.column_name, v2.column_name))
-                        return error.DuplicateColumns;
-                }
-            }
-        }
-
-        // If the passed payload size is greater than max content that a single page can hold
-        // this will overflow.
-        // so the max size of a single row for now is equal to `page_types.Page.CONTENT_MAX_SIZE`
-        var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
-        var primary_key_bytes: []const u8 = undefined;
-        var primary_key_type: muscle.DataType = undefined;
-
-        // for each column find value
-        for (table.columns.values()) |*column| {
-            // @Perf iterate over values and call find_column
-            const value = find_value(column.name, payload.values);
-            var final_value_to_serialize: muscle.Value = .{ .null = {} };
-
-            // if value is not provided or it's provided and null
-            if (value == null or value.?.value == .null) {
-                if (column.auto_increment) {
-                    // increment value and serialize
-                    column.max_int_value += 1;
-                    final_value_to_serialize = muscle.Value{ .int = column.max_int_value };
-                } else if (column.not_null) {
-                    return error.MissingValue;
-                } else {
-                    final_value_to_serialize = .null;
-                }
-            } else {
-                final_value_to_serialize = value.?.value;
-
-                if (column.auto_increment) {
-                    // here we have auto_increment but we are still getting value
-                    // need to adjust max value if current value is bigger
-                    if (column.max_int_value < final_value_to_serialize.int) {
-                        column.max_int_value = final_value_to_serialize.int;
-                    } else if (column.max_int_value >= final_value_to_serialize.int) {
-                        try context.set_err(
-                            error.AutoIncrementConstraintViolation,
-                            "Value is less than current maximum for auto incremented column. Current Value {d} Provided {d}",
-                            .{ column.max_int_value, final_value_to_serialize.int },
-                        );
-                        return error.AutoIncrementConstraintViolation;
-                    }
-                }
-
-                // validate the type of value
-                switch (column.data_type) {
-                    .int => if (final_value_to_serialize != .int and final_value_to_serialize != .null)
-                        return error.TypeMismatch,
-                    .real => if (final_value_to_serialize != .real and final_value_to_serialize != .null)
-                        return error.TypeMismatch,
-                    .bool => if (final_value_to_serialize != .bool and final_value_to_serialize != .null)
-                        return error.TypeMismatch,
-                    .txt => |len| switch (final_value_to_serialize) {
-                        .txt => |text| {
-                            if (text.len > len) return error.TextTooLong;
-                        },
-                        .null => {},
-                        else => return error.TypeMismatch,
-                    },
-                    .bin => |len| switch (final_value_to_serialize) {
-                        .bin => |bin| {
-                            if (bin.len > len) return error.BinaryTooLarge;
-                        },
-                        .null => {},
-                        else => return error.TypeMismatch,
-                    },
-                }
-            }
-
-            try serde.serialize_value(&buffer, final_value_to_serialize);
-            if (std.mem.eql(u8, column.name, table.primary_key)) {
-                primary_key_bytes = buffer.const_slice();
-                primary_key_type = column.data_type;
-                if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
-                    return error.KeyTooLong;
-                }
-            }
-        }
-
-        var btree = BTree.init(context, table.root, primary_key_type);
-        try btree.insert(primary_key_bytes, buffer.const_slice());
-
-        // update metadata
-        try context.catalog.update_table(context.pager, table);
-
-        context.set_data(.{ .insert = .{ .rows_created = 1 } });
-    }
-
-    fn update(self: *Muscle, context: *QueryContext, payload: UpdatePayload) !void {
-        _ = self;
-
-        const table = try if (context.catalog.find_table(payload.table_name)) |t|
-            t.clone(context.arena)
-        else
-            error.TableNotFound;
-
-        const find_value = struct {
-            fn f(
-                column_name: []const u8,
-                values: []const InsertPayload.Value,
-            ) ?*const InsertPayload.Value {
-                for (values) |*val| {
-                    if (std.mem.eql(u8, val.column_name, column_name)) return val;
-                }
-
-                return null;
-            }
-        }.f;
-
-        // check for duplicate columns and whether columns even exists
-        if (payload.values.len > 1) {
-            for (payload.values, 0..) |*v1, i| {
-                if (!table.columns.contains(v1.column_name)) return error.ColumnDoesNotExist;
-                for (payload.values[i + 1 ..]) |*v2| {
-                    if (std.mem.eql(u8, v1.column_name, v2.column_name)) return error.DuplicateColumns;
-                }
-            }
-        }
-
-        // If the passed payload size is greater than max content that a single page can hold
-        // this will overflow.
-        // so the max size of a single row for now is equal to `page_types.Page.CONTENT_MAX_SIZE`
-        var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
-        var primary_key_bytes: []const u8 = undefined;
-        var primary_key_type: muscle.DataType = undefined;
-
-        // for each column find value
-        for (table.columns.values()) |*column| {
-            const value = find_value(column.name, payload.values);
-            var final_value_to_serialize: muscle.Value = .{ .null = {} };
-
-            // if value is not provided or it's provided and null
-            if (value == null or value.?.value == .null) {
-                if (column.auto_increment) {
-                    // increment value and serialize
-                    column.max_int_value += 1;
-                    final_value_to_serialize = muscle.Value{ .int = column.max_int_value };
-                } else if (column.not_null) {
-                    return error.MissingValue;
-                } else {
-                    final_value_to_serialize = .null;
-                }
-            } else {
-                final_value_to_serialize = value.?.value;
-
-                if (column.auto_increment) {
-                    // here we have auto_increment but we are still getting value
-                    // need to adjust max value if current value is bigger
-                    if (column.max_int_value < final_value_to_serialize.int) {
-                        column.max_int_value = final_value_to_serialize.int;
-                    }
-                }
-
-                // validate the type of value
-                switch (column.data_type) {
-                    .int => if (final_value_to_serialize != .int and final_value_to_serialize != .null)
-                        return error.TypeMismatch,
-                    .real => if (final_value_to_serialize != .real and final_value_to_serialize != .null)
-                        return error.TypeMismatch,
-                    .bool => if (final_value_to_serialize != .bool and final_value_to_serialize != .null)
-                        return error.TypeMismatch,
-                    .txt => |len| switch (final_value_to_serialize) {
-                        .txt => |text| {
-                            if (text.len > len) return error.TextTooLong;
-                        },
-                        .null => {},
-                        else => return error.TypeMismatch,
-                    },
-                    .bin => |len| switch (final_value_to_serialize) {
-                        .bin => |bin| {
-                            if (bin.len > len) return error.BinaryTooLarge;
-                        },
-                        .null => {},
-                        else => return error.TypeMismatch,
-                    },
-                }
-            }
-
-            try serde.serialize_value(&buffer, final_value_to_serialize);
-
-            if (std.mem.eql(u8, table.primary_key, column.name)) {
-                primary_key_bytes = buffer.const_slice();
-                primary_key_type = column.data_type;
-                if (primary_key_bytes.len > page_types.INTERNAL_CELL_CONTENT_SIZE_LIMIT) {
-                    return error.KeyTooLong;
-                }
-            }
-        }
-
-        var btree = BTree.init(context, table.root, primary_key_type);
-        try btree.update(primary_key_bytes, buffer.const_slice());
-
-        // update metadata
-        try context.catalog.update_table(context.pager, table);
-
-        context.set_data(.{ .update = .{ .rows_affected = 1 } });
-    }
-
-    fn delete(
+    pub fn select_table_info(
         self: *Muscle,
-        context: *QueryContext,
-        payload: DeletePayload,
-    ) !void {
-        _ = self;
+        table_name: []const u8,
+        arena: std.mem.Allocator,
+    ) !SelectTableMetadataResult {
+        var context = QueryContext.init(arena, "", &self.pager, &self.catalog);
 
-        const table = try if (context.catalog.find_table(payload.table_name)) |t|
-            t.clone(context.arena)
-        else
-            error.TableNotFound;
-
-        // right now all deletes are by pk
-        if (@intFromEnum(table.columns.get(table.primary_key).?.data_type) != @intFromEnum(payload.key)) {
-            return error.TypeMismatch;
-        }
-
-        // primary key has size limit
-        var buffer = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
-        try serde.serialize_value(&buffer, payload.key);
-
-        var btree = BTree.init(context, table.root, table.columns.get(table.primary_key).?.data_type);
-        try btree.delete(buffer.const_slice());
-    }
-
-    fn select(
-        self: *Muscle,
-        context: *QueryContext,
-        payload: SelectPayload,
-    ) !void {
-        _ = self;
-
-        const table = try if (context.catalog.find_table(payload.table_name)) |t|
-            t.clone(context.arena)
-        else
-            error.TableNotFound;
-
-        var result_columns = try std.ArrayList(muscle.Column).initCapacity(context.arena, if (payload.columns.len > 0) payload.columns.len else table.columns.count());
-        var result = query_result.SelectResult{
-            .columns = result_columns,
-            .rows = try std.ArrayList(std.ArrayList(u8)).initCapacity(
-                context.arena,
-                payload.limit,
-            ),
-        };
-
-        if (payload.columns.len == 0) {
-            for (table.columns.values()) |column| {
-                try result_columns.append(context.arena, column);
-            }
-        } else {
-            // validate selected columns and copy inside the results_columns
-            for (payload.columns) |col| {
-                if (table.columns.get(col)) |column| {
-                    try result_columns.append(context.arena, column);
-                } else {
-                    return error.ColumnNotFound;
-                }
-            }
-        }
-
-        var serial: usize = 1;
-        var curr_page_number = table.root;
-
-        // find the leftmost leaf node
-        var curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
-        while (!curr_page.is_leaf()) {
-            assert(curr_page.cell_at_slot(0).left_child != 0);
-            curr_page_number = curr_page.cell_at_slot(0).left_child;
-            curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
-        }
-
-        //std.debug.print("\n\n*****************************************************************\n", .{});
-
-        // traverse using .right pointers and print rows
-        while (true) {
-            std.debug.print("------------------\npage_number: {}, content_size: {}, free_space: {}, num_slots={}, right_child={}, left={}, right={}\n", .{
-                curr_page_number,
-                curr_page.content_size,
-                curr_page.free_space(),
-                curr_page.num_slots,
-                curr_page.right_child,
-                curr_page.left,
-                curr_page.right,
-            });
-
-            for (0..curr_page.num_slots) |slot_index| {
-                const cell = curr_page.cell_at_slot(@intCast(slot_index));
-                var row_bytes = std.ArrayList(u8).empty;
-
-                print(" serial={} size={}", .{ serial, cell.size + @sizeOf(page_types.Page.SlotArrayEntry) });
-                serial += 1;
-
-                var encoded_row = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
-                for (result_columns.items) |column| {
-                    const value = try serde.deserialize_value(context, &table, cell.content, column.name);
-                    try serde.serialize_value(&encoded_row, value);
-                    print("  {s}={any}", .{ column.name, value });
-                }
-                try row_bytes.appendSlice(context.arena, encoded_row.const_slice());
-
-                row_bytes.shrinkAndFree(context.arena, row_bytes.items.len);
-                try result.rows.append(context.arena, row_bytes);
-                print("\n", .{});
-            }
-
-            if (curr_page.right == 0) break;
-            curr_page_number = curr_page.right;
-            curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
-        }
-
-        print(
-            "\n\ndatabase metadata: total_pages: {any} free_pages:{any} first_free_page:{any}",
-            .{
-                context.catalog.metadata.total_pages,
-                context.catalog.metadata.free_pages,
-                context.catalog.metadata.first_free_page,
-            },
-        );
-
-        std.debug.print("\n\n*****************************************************************\n\n", .{});
-
-        result.columns = result_columns;
-        context.set_data(.{ .select = result });
-    }
-
-    fn select_table_info(
-        self: *Muscle,
-        context: *QueryContext,
-        payload: SelectTableMetadata,
-    ) !void {
-        _ = self;
-        const SelectTableMetadataResult = query_result.SelectTableMetadataResult;
-
-        const table = try if (context.catalog.find_table(payload.table_name)) |t|
+        const table = try if (context.catalog.find_table(table_name)) |t|
             t.clone(context.arena)
         else
             error.TableNotFound;
@@ -782,11 +347,11 @@ pub const Muscle = struct {
             }
         }
 
-        context.set_data(.{ .select_table_info = result });
+        return result;
     }
 
-    fn select_database_info(self: *Muscle, context: *QueryContext) !void {
-        _ = self;
+    pub fn select_database_info(self: *Muscle, arena: std.mem.Allocator) !SelectDatabaseMetadataResult {
+        var context = QueryContext.init(arena, "", &self.pager, &self.catalog);
 
         var free_pages = BoundedArray(muscle.PageNumber, 128){};
         const metadata = context.catalog.metadata;
@@ -805,69 +370,77 @@ pub const Muscle = struct {
             }
         }
 
-        print("\n--------------------------------- DATABASE METADATA ------------------------------\n", .{});
-        print("Total pages: {any}\n", .{metadata.total_pages});
-        print("Free pages: {any}\n", .{metadata.free_pages});
-        print("First free page: {any}\n", .{metadata.first_free_page});
+        logger.info("\n--------------------------------- DATABASE METADATA ------------------------------\n", .{});
+        logger.info("Total pages: {any}\n", .{metadata.total_pages});
+        logger.info("Free pages: {any}\n", .{metadata.free_pages});
+        logger.info("First free page: {any}\n", .{metadata.first_free_page});
 
-        print("\nFree pages: ", .{});
+        logger.info("\nFree pages: ", .{});
         for (free_pages.const_slice()) |page_number| {
-            print("{d} -> ", .{page_number});
+            logger.info("{d} -> ", .{page_number});
         }
-        print("0\n", .{});
-        print("\n-----------------------------------------------------------------------------------\n", .{});
+        logger.info("0\n", .{});
+        logger.info("\n-----------------------------------------------------------------------------------\n", .{});
 
         assert(metadata.free_pages == free_pages.len);
 
-        context.set_data(.{ .select_database_info = query_result.SelectDatabaseMetadataResult{
+        return SelectDatabaseMetadataResult{
             .n_total_pages = metadata.total_pages,
             .n_free_pages = metadata.free_pages,
             .first_free_page = metadata.first_free_page,
             .free_pages = free_pages,
-        } });
+        };
     }
 };
 
-const DropTablePayload = struct {
-    table_name: []const u8,
-};
+pub const SelectTableMetadataResult = struct {
+    root_page: muscle.PageNumber,
+    table_columns: std.ArrayList(muscle.Column),
+    btree_height: u16,
 
-pub const InsertPayload = struct {
-    pub const Value = struct {
-        column_name: []const u8,
-        value: muscle.Value,
+    btree_leaf_cells: u32,
+    btree_internal_cells: u32,
+    btree_leaf_pages: u16,
+    btree_internal_pages: u16,
+
+    pages: std.AutoHashMap(muscle.PageNumber, DBPageMetadata),
+
+    pub const DBPageCellMetadata = struct {
+        key: []u8,
+        value: []u8,
+        size: u16,
+        left_child: muscle.PageNumber,
     };
 
-    table_name: []const u8,
-    values: []const Value,
-};
-pub const UpdatePayload = InsertPayload;
+    pub const DBPageMetadata = struct {
+        page: muscle.PageNumber,
+        right_child: muscle.PageNumber,
+        content_size: u16,
+        free_space: u16,
+        left: muscle.PageNumber,
+        right: muscle.PageNumber,
+        cells: std.ArrayList(DBPageCellMetadata),
+    };
 
-const SelectPayload = struct {
-    table_name: []const u8,
-    // zero columns indicates we want all columns
-    columns: []const []const u8 = &[_][]const u8{},
-    // zero limit indicates we want all data
-    limit: usize = 0,
+    pub fn print(self: *const SelectTableMetadataResult) void {
+        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%     Metadata    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
+
+        std.debug.print("Root Page:             {}\n", .{self.root_page});
+        std.debug.print("Total Rows:            {}\n\n", .{self.btree_leaf_cells});
+        std.debug.print("BTree Height:          {}\n", .{self.btree_height});
+        std.debug.print("BTree Internal Pages:  {}\n", .{self.btree_internal_pages});
+        std.debug.print("BTree Leaf Pages:      {}\n", .{self.btree_leaf_pages});
+        std.debug.print("Btree Internal Cells:  {}\n", .{self.btree_internal_cells});
+
+        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   End Metadata  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
+    }
 };
 
-const SelectTableMetadata = struct {
-    table_name: []const u8,
-};
-
-const DeletePayload = struct {
-    table_name: []const u8,
-    key: muscle.Value,
-};
-
-pub const Query = union(enum) {
-    drop_table: DropTablePayload,
-    insert: InsertPayload,
-    update: UpdatePayload,
-    select: SelectPayload,
-    delete: DeletePayload,
-    select_table_info: SelectTableMetadata,
-    select_database_info,
+pub const SelectDatabaseMetadataResult = struct {
+    n_total_pages: u32,
+    n_free_pages: u32,
+    first_free_page: u32,
+    free_pages: muscle.common.BoundedArray(muscle.PageNumber, 128),
 };
 
 test {

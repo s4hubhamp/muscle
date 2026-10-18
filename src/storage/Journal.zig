@@ -2,8 +2,9 @@ const std = @import("std");
 const muscle = @import("../muscle.zig");
 const IO = @import("io.zig").IO;
 
+const logger = std.log.scoped(.journal);
+
 const assert = std.debug.assert;
-const print = std.debug.print;
 const PAGE_SIZE = muscle.PAGE_SIZE;
 
 pub const MAX_JOURNAL_UNSAVED_ENTRIES = 64;
@@ -50,7 +51,7 @@ const JournalMetadataPage = extern struct {
 pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Journal {
     const journal_file_path = try std.mem.concat(allocator, u8, &.{ database_file_path, ".journal" });
     defer allocator.free(journal_file_path);
-    print("Opening Journal file.\n", .{});
+    logger.info("Opening Journal file.\n", .{});
     var io = try IO.init(allocator, journal_file_path);
     errdefer io.deinit();
 

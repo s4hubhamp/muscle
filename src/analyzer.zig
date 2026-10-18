@@ -37,6 +37,10 @@ pub fn analyze(context: *muscle.QueryContext, statements: []Statement) !void {
                 }
                 if (update.where) |predicate| try validate_update_expression(context, table, predicate);
             },
+            .delete => |delete| {
+                const table = try validate_table(context, delete.from);
+                if (delete.where) |predicate| try validate_update_expression(context, table, predicate);
+            },
             .create_table => {},
             else => {
                 unreachable;
@@ -45,7 +49,7 @@ pub fn analyze(context: *muscle.QueryContext, statements: []Statement) !void {
     }
 }
 
-// UPDATE expressions are evaluated against each original row by the planner.
+// UPDATE and DELETE expressions are evaluated against each original row by the planner.
 // Validate references here without the older INSERT expression type rules.
 fn validate_update_expression(context: *muscle.QueryContext, table: *const muscle.Table, expression: Expression) anyerror!void {
     switch (expression) {
@@ -95,7 +99,7 @@ fn analyze_expression(context: *muscle.QueryContext, table: *const muscle.Table,
             if (table.columns.get(identifier)) |column| {
                 return column.data_type;
             } else {
-                try context.set_err(error.AnalyzerError, "Invalid column name {s}.", .{identifier});
+                try context.set_err(error.AnalyzerError, "Unexpected identifier {s}.", .{identifier});
                 return error.AnalyzerError;
             }
         },

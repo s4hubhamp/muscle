@@ -451,8 +451,6 @@ pub const Cell = struct {
             .little,
         );
 
-        // @Perf we have to do -6 below every time. Can the size be only about the cell.content and not header + content?
-        // @Storage Is size even needed? it's just length of content + left child anyways
         return Cell{
             .size = cell_size,
             .left_child = left_child,
@@ -472,16 +470,21 @@ pub const Cell = struct {
         if (is_internal_page_cell) {
             key_slice = self.content;
         } else {
-            const encoded_len = switch (key_data_type) {
-                .int, .real => @sizeOf(i64),
-                .bin, .txt => @sizeOf(u16) + @as(usize, std.mem.readInt(u16, self.content[1 .. 1 + @sizeOf(u16)], .little)),
+            // increment 1 for null bit
+            const encoded_len = 1 + switch (key_data_type) {
+                .int => @sizeOf(i64),
+                .real => @sizeOf(f64),
+                .bin, .txt => @sizeOf(u16) + @as(
+                    usize,
+                    std.mem.readInt(u16, self.content[1 .. 1 + @sizeOf(u16)], .little), // shifted 1 for null bit
+                ),
                 .bool => {
                     // we don't support bool as primary key
                     unreachable;
                 },
             };
 
-            key_slice = self.content[0 .. 1 + encoded_len]; // present marker + typed payload
+            key_slice = self.content[0..encoded_len];
         }
 
         assert(key_slice.len <= INTERNAL_CELL_CONTENT_SIZE_LIMIT);

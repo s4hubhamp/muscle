@@ -13,7 +13,6 @@ pub const QueryFixture = struct {
         self.context = .{
             .input = "",
             .arena = self.arena.allocator(),
-            .result = .{ .data = .__void },
             .pager = undefined,
             .catalog = undefined,
         };

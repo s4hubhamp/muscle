@@ -6,7 +6,6 @@ const Journal = @import("Journal.zig");
 const IO = @import("io.zig").IO;
 
 const assert = std.debug.assert;
-const print = std.debug.print;
 const PageNumber = muscle.PageNumber;
 const PAGE_SIZE = muscle.PAGE_SIZE;
 const DBMetadataPage = page_types.DBMetadataPage;
@@ -15,6 +14,8 @@ const FreePage = page_types.FreePage;
 const Page = page_types.Page;
 const serde = muscle.common.serde;
 const BoundedArray = muscle.common.BoundedArray;
+
+const logger = std.log.scoped(.page_manager);
 
 // When this count is hit, we will commit before proceeding to next query
 // various data structures below are optmized based on this number. Since this is a
@@ -49,7 +50,7 @@ dirty_pages: BoundedArray(PageNumber, MAX_DIRTY_COUNT_BEFORE_COMMIT),
 journal: Journal,
 
 pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageManager {
-    print("Opening Database file.\n", .{});
+    logger.info("Opening Database file.\n", .{});
     var io = try IO.init(allocator, database_file_path);
     errdefer io.deinit();
     // try to read metadata page
@@ -58,7 +59,7 @@ pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageM
     const bytes_read = try io.read(0, &metadata_buffer);
 
     if (bytes_read == 0) {
-        print("Initializing metadata for the first time.\n", .{});
+        logger.info("Initializing metadata for the first time.\n", .{});
         const initial_metadata = DBMetadataPage.init();
         const bytes = try initial_metadata.to_bytes();
         for (&bytes, 0..bytes.len) |*item, i| metadata_buffer[i] = item.*;
@@ -100,7 +101,7 @@ pub fn commit(self: *PageManager, execution_completed: bool) !void {
     if (self.dirty_pages.len == 0) {
         // A partial commit may already have flushed the last dirty page.
         if (execution_completed) try self.journal.clear();
-        print("Nothing to commit.\n", .{});
+        logger.info("Nothing to commit.\n", .{});
         return;
     }
 
@@ -115,7 +116,7 @@ pub fn commit(self: *PageManager, execution_completed: bool) !void {
             // dirty pages will always be inside the cache
             std.mem.asBytes(self.cache.get(page_number).?),
         ) catch |io_err| {
-            print("Failed to save page {} during commit.\n", .{page_number});
+            logger.err("Failed to save page {} during commit.\n", .{page_number});
             return io_err;
         };
     }
@@ -143,7 +144,7 @@ pub fn rollback(self: *PageManager) !void {
 
     // need to truncate file until first_newly_alloced
     if (self.journal.get_first_newly_alloced_page()) |first_newly_alloced| {
-        std.debug.print("Truncated file to page number: {}\n", .{first_newly_alloced});
+        logger.info("Truncated file to page number: {}\n", .{first_newly_alloced});
         try self.io.truncate(first_newly_alloced);
     }
 
@@ -151,7 +152,7 @@ pub fn rollback(self: *PageManager) !void {
     try self.journal.clear();
     // Cached pages may still contain the changes that were just rolled back.
     self.cache.cache.clearRetainingCapacity();
-    print("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
+    logger.info("Rollback Completed. Reverted {} pages.\n", .{n_reverted});
 }
 
 fn mark_dirty(self: *PageManager, page_number: PageNumber) !void {

@@ -21,7 +21,7 @@ fn update_fixture() !*DatabaseFixture {
     return fixture;
 }
 
-fn expect_update_count(result: muscle.query_result.QueryResultV2, expected: i64) !void {
+fn expect_update_count(result: muscle.query_result.QueryResult, expected: i64) !void {
     if (result == .err) std.debug.print("UPDATE failed: {s}: {s}\n", .{ @errorName(result.err.code), result.err.message });
     try std.testing.expect(result == .data);
     try std.testing.expectEqual(@as(usize, 1), result.columnCount());
@@ -546,10 +546,8 @@ test "create_table keeps explicit and generated primary keys first" {
 
         // Two inserts exercise key comparison, which reads the row's first bytes.
         for (0..2) |_| {
-            _ = try db.execute_query(.{ .insert = .{ .table_name = "records", .values = &.{
-                .{ .column_name = "name", .value = .{ .txt = "before" } },
-                .{ .column_name = "rank", .value = .{ .int = 10 } },
-            } } }, allocator);
+            const inserted = try db.execute("INSERT INTO records (name, rank) VALUES ('before', 10);", allocator);
+            try std.testing.expect(inserted == .data);
         }
         try db.pager.commit(true);
         const reloaded_catalog = try muscle.Catalog_Manager.init(allocator, &db.pager);
@@ -558,11 +556,11 @@ test "create_table keeps explicit and generated primary keys first" {
 
         // Catalog persistence must preserve the row layout too.
         try std.testing.expectEqualStrings(case.key, db.catalog.find_table("records").?.columns.keys()[0]);
-        _ = try db.execute_query(.{ .update = .{ .table_name = "records", .values = &.{
-            .{ .column_name = case.key, .value = .{ .int = 1 } },
-            .{ .column_name = "name", .value = .{ .txt = "after" } },
-            .{ .column_name = "rank", .value = .{ .int = 20 } },
-        } } }, allocator);
+        // SQL updates preserve the primary key; use it only to select the row.
+        try expect_update_count(try db.execute(
+            try std.fmt.allocPrint(allocator, "UPDATE records SET name = 'after', rank = 20 WHERE {s} = 1", .{case.key}),
+            allocator,
+        ), 1);
 
         var expected = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
         try serde.serialize_value(&expected, .{ .int = 1 });
@@ -573,14 +571,17 @@ test "create_table keeps explicit and generated primary keys first" {
         try std.testing.expectEqual(@as(u16, 2), page.num_slots);
         try std.testing.expectEqualSlices(u8, expected.const_slice(), page.cell_at_slot(0).content);
 
-        _ = try db.execute_query(.{ .delete = .{ .table_name = "records", .key = .{ .int = 1 } } }, allocator);
+        try expect_delete_count(try db.execute(
+            try std.fmt.allocPrint(allocator, "DELETE FROM records WHERE {s} = 1", .{case.key}),
+            allocator,
+        ), 1);
         page = try db.pager.get_page(page_types.Page, root);
         try std.testing.expectEqual(@as(u16, 1), page.num_slots);
         try std.testing.expectEqual(@as(i64, 2), std.mem.readInt(i64, page.cell_at_slot(0).content[1..9], .little));
     }
 }
 
-test "QueryResultV2 returns projected schema and encoded rows" {
+test "QueryResult returns projected schema and encoded rows" {
     const fixture = try DatabaseFixture.init();
     defer fixture.deinit();
     const db = &fixture.db;
@@ -700,15 +701,16 @@ test "NULL propagates through expressions and WHERE only matches TRUE" {
 test "legacy queries preserve NULL markers when projecting columns out of order" {
     const fixture = try DatabaseFixture.init();
     defer fixture.deinit();
+    const allocator = fixture.allocator();
     try std.testing.expect((try fixture.db.execute("create table records (id int primary key, optional text(32), tail int)", fixture.allocator())) == .data);
-    const inserted = try fixture.db.execute_query(.{ .insert = .{ .table_name = "records", .values = &.{.{ .column_name = "tail", .value = .{ .int = 42 } }} } }, fixture.allocator());
+    const inserted = try fixture.db.execute("insert into records (tail) values (42)", allocator);
     try std.testing.expect(inserted == .data);
-    const result = try fixture.db.execute_query(.{ .select = .{ .table_name = "records", .columns = &.{ "tail", "optional", "id" } } }, fixture.allocator());
+    const result = try fixture.db.execute("select tail, optional, id from records", allocator);
     try std.testing.expect(result == .data);
-    try std.testing.expectEqual(@as(usize, 3), result.data.select.columns.items.len);
+    try std.testing.expectEqual(@as(usize, 3), result.data.columns.len);
     var row: BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE) = .{};
     for ([_]muscle.Value{ .{ .int = 42 }, .null, .{ .int = 1 } }) |value| try serde.serialize_value(&row, value);
-    try std.testing.expectEqualSlices(u8, row.const_slice(), result.data.select.rows.items[0].items);
+    try std.testing.expectEqualSlices(u8, row.const_slice(), result.data.rows.items[0]);
 }
 
 test "NULL update on nullable auto increment column preserves its counter" {
@@ -740,4 +742,164 @@ test "primary key length limit includes the presence marker" {
     const missing_key = try fixture.db.execute("insert into records (name) values (null)", fixture.allocator());
     try std.testing.expect(missing_key == .err);
     try std.testing.expectEqual(error.MissingValue, missing_key.err.code);
+}
+
+fn expect_delete_count(result: muscle.query_result.QueryResult, expected: i64) !void {
+    if (result == .err) std.debug.print("DELETE failed: {s}: {s}\n", .{ @errorName(result.err.code), result.err.message });
+    try std.testing.expect(result == .data);
+    try std.testing.expectEqual(@as(usize, 1), result.columnCount());
+    try std.testing.expectEqualStrings("rows_affected", result.data.columns[0].name);
+    try std.testing.expectEqualDeep(muscle.DataType.int, result.data.columns[0].data_type);
+    try std.testing.expectEqual(@as(usize, 1), result.rowCount());
+    var offset: usize = 0;
+    const count = try serde.read_value(result.data.rows.items[0], &offset, .int);
+    try std.testing.expectEqual(expected, count.int);
+    try std.testing.expectEqual(result.data.rows.items[0].len, offset);
+}
+
+test "SQL DELETE exact keys return affected counts and preserve other rows" {
+    const fixture = try update_fixture();
+    defer fixture.deinit();
+    const allocator = fixture.allocator();
+    for ([_][]const u8{ "id = 99", "id = 2.5", "id = 2 and a = 10" }) |predicate| {
+        const sql = try std.fmt.allocPrint(allocator, "delete from records where {s}", .{predicate});
+        try expect_delete_count(try fixture.db.execute(sql, allocator), 0);
+    }
+    try expect_delete_count(try fixture.db.execute("delete from records where 2 = id", allocator), 1);
+    try expect_sql_rows(fixture, "select id, name from records", &.{
+        &.{ .{ .int = 1 }, .{ .txt = "first" } },
+        &.{ .{ .int = 3 }, .{ .txt = "third" } },
+    });
+    try expect_delete_count(try fixture.db.execute("delete from records where id = 2", allocator), 0);
+}
+
+test "SQL DELETE filtered scans handle NULL and generated primary keys" {
+    const fixture = try DatabaseFixture.init();
+    defer fixture.deinit();
+    const allocator = fixture.allocator();
+    try std.testing.expect((try fixture.db.execute("create table records (active bool)", allocator)) == .data);
+    for ([_][]const u8{ "true", "false", "null", "true" }) |value| {
+        const sql = try std.fmt.allocPrint(allocator, "insert into records (active) values ({s})", .{value});
+        try std.testing.expect((try fixture.db.execute(sql, allocator)) == .data);
+    }
+    try expect_delete_count(try fixture.db.execute("delete from records where active", allocator), 2);
+    try expect_sql_rows(fixture, "select Row_Id, active from records", &.{
+        &.{ .{ .int = 2 }, .{ .bool = false } }, &.{ .{ .int = 3 }, .null },
+    });
+    try std.testing.expect((try fixture.db.execute("insert into records (active) values (false)", allocator)) == .data);
+    try expect_sql_rows(fixture, "select Row_Id from records", &.{ &.{.{ .int = 2 }}, &.{.{ .int = 3 }}, &.{.{ .int = 5 }} });
+}
+
+test "SQL DELETE ranges honor boundaries and safely merge B-tree leaves" {
+    for (range_cases) |case| {
+        const fixture = try range_fixture();
+        defer fixture.deinit();
+        const sql = try std.fmt.allocPrint(fixture.allocator(), "delete from records where {s}", .{case.predicate});
+        try expect_delete_count(try fixture.db.execute(sql, fixture.allocator()), @intCast(case.end - case.first));
+        const remaining = try fixture.db.execute("select id from records", fixture.allocator());
+        try std.testing.expect(remaining == .data);
+        try std.testing.expectEqual(24 - (case.end - case.first), remaining.rowCount());
+        var row_index: usize = 0;
+        for (1..25) |i| {
+            if (i >= case.first and i < case.end) continue;
+            var offset: usize = 0;
+            const id = try serde.read_value(remaining.data.rows.items[row_index], &offset, .int);
+            try std.testing.expectEqual(@as(i64, @intCast(i * 10)), id.int);
+            row_index += 1;
+        }
+    }
+}
+
+test "SQL DELETE overlapping OR branches delete each row once" {
+    const fixture = try range_fixture();
+    defer fixture.deinit();
+    const allocator = fixture.allocator();
+    try expect_delete_count(try fixture.db.execute("delete from records where (id >= 60 and id < 190) or (id >= 100 and id < 200)", allocator), 14);
+    try expect_delete_count(try fixture.db.execute("delete from records where id = 10 or id = 10", allocator), 1);
+    try expect_delete_count(try fixture.db.execute("delete from records where id = 999 or id = 10", allocator), 0);
+    try expect_delete_count(try fixture.db.execute("delete from records", allocator), 9);
+    try expect_sql_rows(fixture, "select id from records", &.{});
+    try expect_delete_count(try fixture.db.execute("delete from records", allocator), 0);
+    try std.testing.expect((try fixture.db.execute("insert into records (id, score, payload) values (250, 0, 'new')", allocator)) == .data);
+    try expect_sql_rows(fixture, "select id from records", &.{&.{.{ .int = 250 }}});
+}
+
+test "SQL DELETE text primary keys support exact and range predicates" {
+    const fixture = try DatabaseFixture.init();
+    defer fixture.deinit();
+    const allocator = fixture.allocator();
+    try std.testing.expect((try fixture.db.execute("create table records (name text(32) primary key, score int)", allocator)) == .data);
+    for ([_][]const u8{ "alpha", "bravo", "charlie", "delta" }) |key| {
+        const sql = try std.fmt.allocPrint(allocator, "insert into records (name, score) values ('{s}', 1)", .{key});
+        try std.testing.expect((try fixture.db.execute(sql, allocator)) == .data);
+    }
+    try expect_delete_count(try fixture.db.execute("delete from records where name = 'bravo'", allocator), 1);
+    try expect_delete_count(try fixture.db.execute("delete from records where name >= 'charlie'", allocator), 2);
+    try expect_sql_rows(fixture, "select name from records", &.{&.{.{ .txt = "alpha" }}});
+}
+
+test "SQL DELETE invalid predicates leave rows unchanged" {
+    const fixture = try update_fixture();
+    defer fixture.deinit();
+    const original = try fixture.db.execute("select * from records", fixture.allocator());
+    const cases = [_]struct { sql: []const u8, err: anyerror }{
+        .{ .sql = "delete from missing", .err = error.AnalyzerError },
+        .{ .sql = "delete from records where missing = 1", .err = error.AnalyzerError },
+        .{ .sql = "delete from records where id", .err = error.TypeMismatch },
+        .{ .sql = "delete from records where id = 'bad'", .err = error.IncompatibleTypes },
+        .{ .sql = "delete from records where a / (3 - id) > 0", .err = error.DivisionByZero },
+    };
+    for (cases) |case| {
+        const result = try fixture.db.execute(case.sql, fixture.allocator());
+        try std.testing.expect(result == .err);
+        try std.testing.expectEqual(case.err, result.err.code);
+        const after = try fixture.db.execute("select * from records", fixture.allocator());
+        try std.testing.expectEqualDeep(original.data.rows.items, after.data.rows.items);
+    }
+}
+
+test "SQL DELETE batch rollback restores previously deleted rows" {
+    const fixture = try update_fixture();
+    defer fixture.deinit();
+    const allocator = fixture.allocator();
+    const original = try fixture.db.execute("select * from records", allocator);
+    const result = try fixture.db.execute("delete from records where id = 1; delete from records where a / (3 - id) > 0", allocator);
+    try std.testing.expect(result == .err);
+    try std.testing.expectEqual(error.DivisionByZero, result.err.code);
+    const after = try fixture.db.execute("select * from records", allocator);
+    try std.testing.expectEqualDeep(original.data.rows.items, after.data.rows.items);
+}
+
+test "SQL DELETE persists committed removals after reopening" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    const path = try std.fs.path.join(allocator, &.{ directory, "delete.db" });
+    {
+        var db = try muscle.database.Muscle.init(allocator, path);
+        defer db.deinit();
+        try std.testing.expect((try db.execute("create table records (id int primary key, score int)", allocator)) == .data);
+        try std.testing.expect((try db.execute("insert into records (score) values (10); insert into records (score) values (20)", allocator)) == .data);
+        try expect_delete_count(try db.execute("delete from records where id = 1", allocator), 1);
+    }
+    {
+        var db = try muscle.database.Muscle.init(allocator, path);
+        defer db.deinit();
+        const remaining = try db.execute("select id, score from records", allocator);
+        try std.testing.expect(remaining == .data);
+        try std.testing.expectEqual(@as(usize, 1), remaining.rowCount());
+        var offset: usize = 0;
+        try std.testing.expectEqual(@as(i64, 2), (try serde.read_value(remaining.data.rows.items[0], &offset, .int)).int);
+        try std.testing.expectEqual(@as(i64, 20), (try serde.read_value(remaining.data.rows.items[0], &offset, .int)).int);
+        try expect_delete_count(try db.execute("delete from records where id = 1", allocator), 0);
+        try std.testing.expect((try db.execute("insert into records (score) values (30)", allocator)) == .data);
+        const inserted = try db.execute("select id from records where score = 30", allocator);
+        try std.testing.expect(inserted == .data);
+        try std.testing.expectEqual(@as(usize, 1), inserted.rowCount());
+        offset = 0;
+        try std.testing.expectEqual(@as(i64, 3), (try serde.read_value(inserted.data.rows.items[0], &offset, .int)).int);
+    }
 }

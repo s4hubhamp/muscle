@@ -4,6 +4,8 @@ const muscle = @import("../../muscle.zig");
 const Io = std.Io;
 const PAGE_SIZE = muscle.PAGE_SIZE;
 
+const logger = std.log.scoped(.io);
+
 pub const IO = struct {
     io: std.Io.Threaded,
     file: std.Io.File,
@@ -21,12 +23,12 @@ pub const IO = struct {
             .{ .mode = .read_write, .lock = .exclusive, .lock_nonblocking = true },
         ) catch |err| sw: switch (err) {
             error.FileNotFound => {
-                std.debug.print("File not found.\n", .{});
-                std.debug.print("Creating new file at {s}.\n", .{absolute_path});
+                logger.info("File not found.", .{});
+                logger.info("Creating new file at {s}.", .{absolute_path});
                 // Preserve contents if another opener creates the file first.
                 const file = Io.Dir.createFileAbsolute(io.io(), absolute_path, .{ .read = true, .truncate = false, .lock = .exclusive, .lock_nonblocking = true }) catch |w_err| {
-                    std.debug.print(
-                        "Error occurred while trying to create file at: {s} error: {any}\n",
+                    logger.err(
+                        "Error occurred while trying to create file at: {s} error: {any}",
                         .{ absolute_path, w_err },
                     );
                     return w_err;
@@ -61,7 +63,7 @@ pub const IO = struct {
     }
 
     pub fn truncate(self: *IO, page_number: u32) !void {
-        std.debug.print("Truncated file to position: {}\n", .{page_offset(page_number)});
+        logger.info("Truncated file to position: {}", .{page_offset(page_number)});
         try Io.File.setLength(self.file, self.io.io(), page_offset(page_number));
     }
 

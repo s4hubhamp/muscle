@@ -43,6 +43,24 @@ pub fn deserialize_value(
     return error.ColumnDoesNotExist;
 }
 
+pub fn get_serialized_slice(
+    context: *muscle.QueryContext,
+    table: *const muscle.Table,
+    content: muscle.page_types.EncodedCellContent,
+    column_name: []const u8,
+) ![]const u8 {
+    var offset: usize = 0;
+    for (table.columns.values()) |column| {
+        const value = read_value_raw(content, &offset, column.data_type) catch |err| {
+            try context.set_err(err, "Row data is invalid or truncated.", .{});
+            return err;
+        };
+        if (std.mem.eql(u8, column.name, column_name)) return value;
+    }
+    try context.set_err(error.ColumnDoesNotExist, "Referenced column does not exist {s}.", .{column_name});
+    return error.ColumnDoesNotExist;
+}
+
 fn read_bytes(content: []const u8, offset: *usize, len: usize) ![]const u8 {
     if (offset.* > content.len or content.len - offset.* < len) return error.CorruptedData;
     const bytes = content[offset.*..][0..len];
@@ -57,6 +75,7 @@ pub fn read_value(content: []const u8, offset: *usize, data_type: muscle.DataTyp
         1 => {},
         else => return error.CorruptedData,
     }
+
     return switch (data_type) {
         .int => .{ .int = std.mem.readInt(i64, (try read_bytes(content, offset, 8))[0..8], .little) },
         .real => .{ .real = @bitCast(std.mem.readInt(u64, (try read_bytes(content, offset, 8))[0..8], .little)) },
@@ -73,13 +92,29 @@ pub fn read_value(content: []const u8, offset: *usize, data_type: muscle.DataTyp
     };
 }
 
+pub fn read_value_raw(content: []const u8, offset: *usize, data_type: muscle.DataType) ![]const u8 {
+    return switch (data_type) {
+        .int, .real => (try read_bytes(content, offset, 9)),
+        .bool => (try read_bytes(content, offset, 2)),
+        .txt, .bin => blk: {
+            const start = offset.*;
+            _ = try read_bytes(content, offset, 1);
+            const len = std.mem.readInt(u16, (try read_bytes(content, offset, 2))[0..2], .little);
+            _ = try read_bytes(content, offset, len);
+            break :blk content[start .. start + 1 + 2 + len];
+        },
+    };
+}
+
 fn encoded_size(value: muscle.Value) !usize {
-    return switch (value) {
-        .null => 1,
-        .int, .real => 9,
-        .bool => 2,
-        .txt => |text| if (text.len <= std.math.maxInt(u16)) 3 + text.len else error.TextTooLong,
-        .bin => |bytes| if (bytes.len <= std.math.maxInt(u16)) 3 + bytes.len else error.BinaryTooLarge,
+    // increment 1 for null bit
+    return 1 + try switch (value) {
+        .null => 0,
+        .int => @sizeOf(i64),
+        .real => @sizeOf(f64),
+        .bool => 1,
+        .txt => |text| if (text.len <= std.math.maxInt(u16)) @sizeOf(u16) + text.len else error.TextTooLong,
+        .bin => |bytes| if (bytes.len <= std.math.maxInt(u16)) @sizeOf(u16) + bytes.len else error.BinaryTooLarge,
     };
 }
 

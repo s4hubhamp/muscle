@@ -2,24 +2,15 @@ const std = @import("std");
 const muscle = @import("muscle.zig");
 
 pub const QueryResult = union(enum) {
-    data: Data,
+    data: ResultSet,
     err: Error,
 
     pub fn is_error_result(self: *const QueryResult) bool {
         return self.* == .err;
     }
-};
-
-pub const QueryResultV2 = union(enum) {
-    data: ResultSet,
-    err: Error,
-
-    pub fn is_error_result(self: *const QueryResultV2) bool {
-        return self.* == .err;
-    }
 
     /// Number of returned rows, or zero for an error result.
-    pub fn rowCount(self: *const QueryResultV2) usize {
+    pub fn rowCount(self: *const QueryResult) usize {
         return switch (self.*) {
             .data => |data| data.rows.items.len,
             .err => 0,
@@ -27,7 +18,7 @@ pub const QueryResultV2 = union(enum) {
     }
 
     /// Number of result columns, including when no rows are returned.
-    pub fn columnCount(self: *const QueryResultV2) usize {
+    pub fn columnCount(self: *const QueryResult) usize {
         return switch (self.*) {
             .data => |data| data.columns.len,
             .err => 0,
@@ -36,7 +27,7 @@ pub const QueryResultV2 = union(enum) {
 
     /// Total encoded row bytes, excluding schema and allocation overhead.
     /// Returns zero for an error result.
-    pub fn size(self: *const QueryResultV2) usize {
+    pub fn size(self: *const QueryResult) usize {
         return switch (self.*) {
             .data => |data| blk: {
                 var bytes: usize = 0;
@@ -48,11 +39,11 @@ pub const QueryResultV2 = union(enum) {
     }
 
     /// Print a table to stderr, using the same output as the `{f}` formatter.
-    pub fn print(self: *const QueryResultV2) void {
+    pub fn print(self: *const QueryResult) void {
         std.debug.print("{f}", .{self.*});
     }
 
-    pub fn format(self: QueryResultV2, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    pub fn format(self: QueryResult, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         self.write_table(writer, arena.allocator()) catch |err| {
@@ -61,7 +52,7 @@ pub const QueryResultV2 = union(enum) {
         };
     }
 
-    fn write_table(self: *const QueryResultV2, writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+    fn write_table(self: *const QueryResult, writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
         const result = switch (self.*) {
             .err => |err| return writer.print("Error ({s}): {s}\n", .{ @errorName(err.code), err.message }),
             .data => |data| data,
@@ -162,83 +153,7 @@ pub const Error = struct {
     message: []const u8,
 };
 
-pub const InsertResult = struct {
-    rows_created: u32,
-};
-
-pub const UpdateResult = struct {
-    rows_affected: u32,
-};
-
-pub const SelectTableMetadataResult = struct {
-    root_page: muscle.PageNumber,
-    table_columns: std.ArrayList(muscle.Column),
-    btree_height: u16,
-
-    btree_leaf_cells: u32,
-    btree_internal_cells: u32,
-    btree_leaf_pages: u16,
-    btree_internal_pages: u16,
-
-    pages: std.AutoHashMap(muscle.PageNumber, DBPageMetadata),
-
-    pub const DBPageCellMetadata = struct {
-        key: []u8,
-        value: []u8,
-        size: u16,
-        left_child: muscle.PageNumber,
-    };
-
-    pub const DBPageMetadata = struct {
-        page: muscle.PageNumber,
-        right_child: muscle.PageNumber,
-        content_size: u16,
-        free_space: u16,
-        left: muscle.PageNumber,
-        right: muscle.PageNumber,
-        cells: std.ArrayList(DBPageCellMetadata),
-    };
-
-    pub fn print(self: *const SelectTableMetadataResult) void {
-        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%     Metadata    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
-
-        std.debug.print("Root Page:             {}\n", .{self.root_page});
-        std.debug.print("Total Rows:            {}\n\n", .{self.btree_leaf_cells});
-        std.debug.print("BTree Height:          {}\n", .{self.btree_height});
-        std.debug.print("BTree Internal Pages:  {}\n", .{self.btree_internal_pages});
-        std.debug.print("BTree Leaf Pages:      {}\n", .{self.btree_leaf_pages});
-        std.debug.print("Btree Internal Cells:  {}\n", .{self.btree_internal_cells});
-
-        std.debug.print("\n\n%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%   End Metadata  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n\n", .{});
-    }
-};
-
-pub const SelectDatabaseMetadataResult = struct {
-    n_total_pages: u32,
-    n_free_pages: u32,
-    first_free_page: u32,
-    free_pages: muscle.common.BoundedArray(muscle.PageNumber, 128),
-};
-
-pub const SelectResult = struct {
-    columns: std.ArrayList(muscle.Column),
-    rows: std.ArrayList(std.ArrayList(u8)), // @Todo update to use EncodedCellContent instead of ArrayList(u8)
-};
-
-pub const Data = union(enum) {
-    insert: InsertResult,
-    update: UpdateResult,
-    select: SelectResult,
-
-    //
-    select_table_info: SelectTableMetadataResult,
-    select_database_info: SelectDatabaseMetadataResult,
-
-    // void result type when we don't have any data
-    __void,
-};
-
-test "QueryResultV2 prints decoded values in aligned columns" {
+test "QueryResult prints decoded values in aligned columns" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -248,7 +163,7 @@ test "QueryResultV2 prints decoded values in aligned columns" {
         .{ .txt = "A\nB|C" }, .{ .bin = &.{ 0, 255 } },
     };
     for (values) |value| try muscle.common.serde.serialize_value(&row, value);
-    var result = QueryResultV2{ .data = .{ .columns = &.{
+    var result = QueryResult{ .data = .{ .columns = &.{
         .{ .name = "id", .data_type = .int },
         .{ .name = "score", .data_type = .real },
         .{ .name = "active", .data_type = .bool },
@@ -277,13 +192,13 @@ test "QueryResultV2 prints decoded values in aligned columns" {
     try std.testing.expectEqualStrings(expected, writer.buffered());
 }
 
-test "QueryResultV2 prints empty results and errors and rejects malformed rows" {
+test "QueryResult prints empty results and errors and rejects malformed rows" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
     var buffer: [512]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
-    var result = QueryResultV2{ .data = .{} };
+    var result = QueryResult{ .data = .{} };
     try result.write_table(&writer, allocator);
     try std.testing.expectEqualStrings("(0 rows)\n", writer.buffered());
 
@@ -312,11 +227,11 @@ test "QueryResultV2 prints empty results and errors and rejects malformed rows" 
     try std.testing.expectEqualStrings("Error (ColumnDoesNotExist): Missing column id\n", writer.buffered());
 }
 
-test "QueryResultV2 sizes columns using every row" {
+test "QueryResult sizes columns using every row" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var result = QueryResultV2{ .data = .{ .columns = &.{.{ .name = "id", .data_type = .int }} } };
+    var result = QueryResult{ .data = .{ .columns = &.{.{ .name = "id", .data_type = .int }} } };
     for ([_]i64{ 1, -1234 }) |number| {
         try result.data.rows.append(allocator, try muscle.common.serde.serialize(.{ .int = number }, allocator));
     }

@@ -33,7 +33,7 @@ pub const Select = struct {
     limit: ?usize,
 };
 
-const Delete = struct {
+pub const Delete = struct {
     from: []const u8,
     where: ?Expression,
 };

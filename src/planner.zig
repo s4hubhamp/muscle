@@ -4,6 +4,7 @@ const muscle = @import("./muscle.zig");
 const Statement = muscle.statement.Statement;
 const InsertStatement = muscle.statement.Insert;
 const UpdateStatement = muscle.statement.Update;
+const DeleteStatement = muscle.statement.Delete;
 const CreateTableStatement = muscle.statement.CreateTable;
 const SelectStatement = muscle.statement.Select;
 const Assignment = muscle.statement.Assignment;
@@ -37,6 +38,7 @@ pub const Plan = union(enum) {
 
     insert: InsertPlan,
     update: UpdatePlan,
+    delete: DeletePlan,
 
     // create table, drop table
     unplanned: Statement,
@@ -50,7 +52,8 @@ pub const Plan = union(enum) {
             .logical_or_scan => |*logical_or| logical_or.next(),
             .insert => |*insert| insert.next(),
             .update => |*update| update.next(),
-            .project,
+            .delete => |*delete| delete.next(),
+            .project => |*project| project.next(),
             .sort,
             .index_scan,
             .unplanned,
@@ -122,7 +125,7 @@ const InsertPlan = struct {
                     } else if (column.max_int_value >= final_value_to_serialize.int) {
                         try self.context.set_err(
                             error.AutoIncrementConstraintViolation,
-                            "Value is less than current maximum for auto incremented column. Current Value {d} Provided {d}",
+                            "Value is less than current maximum for auto incremented column. Current Value: {d} Provided: {d}",
                             .{ column.max_int_value, final_value_to_serialize.int },
                         );
                         return error.AutoIncrementConstraintViolation;
@@ -220,11 +223,10 @@ const UpdatePlan = struct {
             });
         }
 
-        const count = try serde.serialize(.{ .int = @intCast(changes.items.len) }, arena);
         var btree = muscle.BTree.init(self.context, table.root, key_type);
         for (changes.items) |change| try btree.update(change.key, change.row);
         if (changes.items.len > 0) try self.context.catalog.update_table(self.context.pager, table);
-        return count;
+        return try serde.serialize(.{ .int = @intCast(changes.items.len) }, arena);
     }
 };
 
@@ -261,6 +263,34 @@ fn update_value(column: muscle.Column, original: muscle.Value) !muscle.Value {
     }
     return value;
 }
+
+const DeletePlan = struct {
+    context: *muscle.QueryContext,
+    table_name: []const u8,
+    where: ?Expression,
+    source: *Plan,
+    done: bool = false,
+
+    pub fn next(self: *@This()) !?muscle.page_types.EncodedCellContent {
+        if (self.done) return null;
+        self.done = true;
+        const arena = self.context.arena;
+        var table = try self.context.catalog.find_table(self.table_name).?.clone(arena);
+        const key_type = table.columns.get(table.primary_key).?.data_type;
+
+        var keys_to_delete: std.ArrayList([]const u8) = .empty;
+
+        while (try self.source.next()) |content| {
+            const key = try serde.get_serialized_slice(self.context, &table, content, table.primary_key);
+            try keys_to_delete.append(arena, try arena.dupe(u8, key));
+        }
+
+        var btree = muscle.BTree.init(self.context, table.root, key_type);
+        for (keys_to_delete.items) |key| try btree.delete(key);
+
+        return try serde.serialize(.{ .int = @intCast(keys_to_delete.items.len) }, arena);
+    }
+};
 
 const ProjectPlan = struct {
     context: *muscle.QueryContext,
@@ -580,6 +610,9 @@ pub fn make_plans(context: *muscle.QueryContext, statements: []Statement) ![]Pla
             .select => |select| {
                 plans.appendAssumeCapacity(try plan_select(context, select));
             },
+            .delete => |delete| {
+                plans.appendAssumeCapacity(try plan_delete(context, delete));
+            },
             else => unreachable,
         }
     }
@@ -618,6 +651,17 @@ fn plan_update(context: *muscle.QueryContext, payload: UpdateStatement) !Plan {
     } };
 }
 
+fn plan_delete(context: *muscle.QueryContext, payload: DeleteStatement) !Plan {
+    const table = context.catalog.find_table(payload.from).?;
+    const source = try plan_source(context, table, payload.where, null);
+    return .{ .delete = .{
+        .context = context,
+        .table_name = payload.from,
+        .where = payload.where,
+        .source = source,
+    } };
+}
+
 fn plan_select(context: *muscle.QueryContext, payload: SelectStatement) !Plan {
     const table = context.catalog.find_table(payload.table).?;
 
@@ -647,7 +691,6 @@ fn plan_select(context: *muscle.QueryContext, payload: SelectStatement) !Plan {
     };
 }
 
-// Both SELECT and UPDATE consume the same row sources and predicate rules.
 fn plan_source(context: *muscle.QueryContext, table: *const muscle.Table, predicate_expression: ?Expression, limit: ?usize) anyerror!*Plan {
     const source = try context.arena.create(Plan);
     if (predicate_expression) |predicate| {
@@ -843,14 +886,14 @@ pub fn resolve_expression(
                     const right_tag = std.meta.activeTag(right);
                     if ((left_tag != .int and left_tag != .real) or
                         (right_tag != .int and right_tag != .real))
-                    {
-                        try context.set_err(
-                            error.IncompatibleTypes,
-                            "Incompatible types for {s} operation. left {s} right {s}",
-                            .{ @tagName(binary.operator), @tagName(left), @tagName(right) },
-                        );
-                        return error.IncompatibleTypes;
-                    }
+                        {
+                            try context.set_err(
+                                error.IncompatibleTypes,
+                                "Incompatible types for {s} operation. left {s} right {s}",
+                                .{ @tagName(binary.operator), @tagName(left), @tagName(right) },
+                            );
+                            return error.IncompatibleTypes;
+                        }
 
                     const left_value = left.to_f64();
                     const right_value = right.to_f64();

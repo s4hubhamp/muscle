@@ -23,7 +23,7 @@ test "parseSelect" {
 
     {
         context.input = "invalid";
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -31,7 +31,7 @@ test "parseSelect" {
     {
         context.input = "select";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -39,7 +39,7 @@ test "parseSelect" {
     {
         context.input = "select a,";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -47,7 +47,7 @@ test "parseSelect" {
     {
         context.input = "select *, a";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -55,7 +55,7 @@ test "parseSelect" {
     {
         context.input = "select *";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -63,7 +63,7 @@ test "parseSelect" {
     {
         context.input = "select * col";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -71,7 +71,7 @@ test "parseSelect" {
     {
         context.input = "select * from";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -79,7 +79,7 @@ test "parseSelect" {
     {
         context.input = "select * from duck dd";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -87,7 +87,7 @@ test "parseSelect" {
     {
         context.input = "select * from duck where a < 3 && b > 43";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -95,7 +95,7 @@ test "parseSelect" {
     {
         context.input = "select * from duck where a < limit";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -103,7 +103,7 @@ test "parseSelect" {
     {
         context.input = "select * from duck where a < 3 and b > 43 limit -12";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -111,7 +111,7 @@ test "parseSelect" {
     {
         context.input = "select * from duck where a < 3 and b > 43 limit 12";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const select = statements[0];
         try std.testing.expect(select.select.columns.len == 1);
@@ -146,7 +146,7 @@ test "parseInsert" {
     {
         context.input = "insert into";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -154,7 +154,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -162,7 +162,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -170,7 +170,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (col1, col2)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -178,7 +178,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (col1, col2) values";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -186,7 +186,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck () values ()";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -194,7 +194,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (col1) values ()";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -202,7 +202,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (col1, col1) values (val)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -210,7 +210,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (col1, col2) values (val)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -218,7 +218,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (col1, col2) values (val, val) &";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -226,7 +226,7 @@ test "parseInsert" {
     {
         context.input = "insert into duck (col1, col2) values (val, val) ;";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
 
         try std.testing.expect(!context.result.is_error_result());
@@ -264,7 +264,7 @@ test "parseUpdate" {
     {
         context.input = "update users";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -272,7 +272,7 @@ test "parseUpdate" {
     {
         context.input = "update users set";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -280,7 +280,7 @@ test "parseUpdate" {
     {
         context.input = "update users set name";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -288,7 +288,7 @@ test "parseUpdate" {
     {
         context.input = "update users set name =";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -296,7 +296,7 @@ test "parseUpdate" {
     {
         context.input = "update users set name = 'John', name = 'Jane'";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -304,7 +304,7 @@ test "parseUpdate" {
     {
         context.input = "update users set name = 'John', age = 25,";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -312,7 +312,7 @@ test "parseUpdate" {
     {
         context.input = "update users set name = 'John' where";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -320,7 +320,7 @@ test "parseUpdate" {
     {
         context.input = "update users set name = 'John' &";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -328,7 +328,7 @@ test "parseUpdate" {
     {
         context.input = "update users set name = 'John';";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const update = statements[0];
         try std.testing.expect(update == .update);
@@ -343,7 +343,7 @@ test "parseUpdate" {
         context.input = "update products set price = 99.99, stock = 50 where id = 1";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const update = statements[0];
         try std.testing.expect(update == .update);
@@ -384,7 +384,7 @@ test "parseCreateTable" {
     {
         context.input = "create table";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -393,7 +393,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -402,7 +402,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users ()";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -411,7 +411,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -420,7 +420,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id varchar)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -429,7 +429,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id int, id text)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -438,7 +438,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id int primary key, email text primary key)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -447,7 +447,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id int primary key primary key)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -456,7 +456,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (email text unique unique)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -465,7 +465,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id int";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -474,7 +474,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (name text(0))";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -483,7 +483,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (name text(abc))";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -492,7 +492,7 @@ test "parseCreateTable" {
     {
         context.input = "create table files (data binary(0))";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -501,7 +501,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (name text(255)";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -510,7 +510,7 @@ test "parseCreateTable" {
     {
         context.input = "create table users (id int) &";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -520,7 +520,7 @@ test "parseCreateTable" {
         context.input = "create table users (id int, name text, active bool);";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const create = statements[0];
         try std.testing.expect(create == .create_table);
@@ -548,7 +548,7 @@ test "parseCreateTable" {
         context.input = "create table products (id int primary key, name text(100) unique, price real, description text)";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const create = statements[0];
         try std.testing.expect(create == .create_table);
@@ -581,7 +581,7 @@ test "parseCreateTable" {
         context.input = "create table files (id int primary key, filename text(255), data binary(1024), thumbnail binary)";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const create = statements[0];
         try std.testing.expect(create == .create_table);
@@ -604,7 +604,7 @@ test "parseCreateTable" {
         context.input = "create table test_types (id int, score real, name text, data binary, active bool);";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const create = statements[0];
         try std.testing.expect(create == .create_table);
@@ -624,7 +624,7 @@ test "parseCreateTable" {
         context.input = "create table simple (id int)";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const create = statements[0];
         try std.testing.expect(create == .create_table);
@@ -662,7 +662,7 @@ test "parseDropTable" {
     {
         context.input = "drop table";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -671,7 +671,7 @@ test "parseDropTable" {
     {
         context.input = "drop table users &";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -680,7 +680,7 @@ test "parseDropTable" {
     {
         context.input = "drop table users, products";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -689,7 +689,7 @@ test "parseDropTable" {
     {
         context.input = "drop table select";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -698,7 +698,7 @@ test "parseDropTable" {
     {
         context.input = "drop table 123";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -707,7 +707,7 @@ test "parseDropTable" {
     {
         context.input = "drop table 'users'";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -716,7 +716,7 @@ test "parseDropTable" {
     {
         context.input = "drop table users cascade";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -726,7 +726,7 @@ test "parseDropTable" {
         context.input = "drop table users;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const drop = statements[0];
         try std.testing.expect(drop == .drop_table);
@@ -739,7 +739,7 @@ test "parseDropTable" {
         context.input = "drop table products";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const drop = statements[0];
         try std.testing.expect(drop == .drop_table);
@@ -752,7 +752,7 @@ test "parseDropTable" {
         context.input = "drop table user_profiles;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const drop = statements[0];
         try std.testing.expect(drop == .drop_table);
@@ -765,7 +765,7 @@ test "parseDropTable" {
         context.input = "drop table table123;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const drop = statements[0];
         try std.testing.expect(drop == .drop_table);
@@ -778,7 +778,7 @@ test "parseDropTable" {
         context.input = "DROP TABLE MyTable;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const drop = statements[0];
         try std.testing.expect(drop == .drop_table);
@@ -791,7 +791,7 @@ test "parseDropTable" {
         context.input = "drop table very_long_table_name_with_many_underscores_and_characters;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const drop = statements[0];
         try std.testing.expect(drop == .drop_table);
@@ -804,7 +804,7 @@ test "parseDropTable" {
         context.input = "drop table _private_table;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const drop = statements[0];
         try std.testing.expect(drop == .drop_table);
@@ -841,7 +841,7 @@ test "parseDelete" {
     {
         context.input = "delete from";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -850,7 +850,7 @@ test "parseDelete" {
     {
         context.input = "delete from users &";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -859,7 +859,7 @@ test "parseDelete" {
     {
         context.input = "delete from users where";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -868,7 +868,7 @@ test "parseDelete" {
     {
         context.input = "delete from users where id =";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -877,7 +877,7 @@ test "parseDelete" {
     {
         context.input = "delete from select";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -886,7 +886,7 @@ test "parseDelete" {
     {
         context.input = "delete from 123";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -895,7 +895,7 @@ test "parseDelete" {
     {
         context.input = "delete from 'users'";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -904,7 +904,7 @@ test "parseDelete" {
     {
         context.input = "delete from users cascade";
         parser.position = 0;
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         _ = parser.parse() catch {};
         try std.testing.expect(context.result.is_error_result());
     }
@@ -914,7 +914,7 @@ test "parseDelete" {
         context.input = "delete from users;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -928,7 +928,7 @@ test "parseDelete" {
         context.input = "delete from products";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -942,7 +942,7 @@ test "parseDelete" {
         context.input = "delete from users where id = 1;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -956,7 +956,7 @@ test "parseDelete" {
         context.input = "delete from orders where status = 'cancelled' and created_at < '2023-01-01'";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -970,7 +970,7 @@ test "parseDelete" {
         context.input = "delete from products where price > 100.50;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -984,7 +984,7 @@ test "parseDelete" {
         context.input = "delete from users where active = false";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -998,7 +998,7 @@ test "parseDelete" {
         context.input = "delete from user_profiles where user_id = 42;";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -1012,7 +1012,7 @@ test "parseDelete" {
         context.input = "delete from logs where level = 'debug' or level = 'trace'";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
@@ -1026,7 +1026,7 @@ test "parseDelete" {
         context.input = "delete from items where (category = 'electronics' and price < 50)";
         parser.position = 0;
         parser.statements.clearAndFree(arena.allocator());
-        context.result = .{ .data = .__void };
+        context.result = .{ .data = .{} };
         const statements = try parser.parse();
         const delete = statements[0];
         try std.testing.expect(delete == .delete);
