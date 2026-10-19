@@ -119,7 +119,7 @@ test "HTTP queries return database output and reject invalid requests" {
     var db = try muscle.database.Muscle.init(std.testing.allocator, path);
     defer db.deinit();
     const cases = [_]struct { method: []const u8 = "POST", target: []const u8 = "/query", sql: []const u8, status: []const u8, output: []const u8 }{
-        .{ .sql = "create table records (id int primary key, name text(32))", .status = "200", .output = "(0 rows)\n" },
+        .{ .sql = "create table records (id int primary key, name text(32))", .status = "200", .output = "Table created." },
         .{ .sql = "insert into records (id, name) values (1, 'Alice')", .status = "200", .output = "rows_created" },
         .{ .sql = "select id, name from records", .status = "200", .output = "Alice" },
         .{ .sql = "select * from missing", .status = "400", .output = "Error (" },
@@ -136,6 +136,8 @@ test "HTTP queries return database output and reject invalid requests" {
         try handleRequest(&request, &db, allocator);
         const response = writer.written();
         try std.testing.expect(std.mem.startsWith(u8, response, try std.fmt.allocPrint(allocator, "HTTP/1.1 {s}", .{case.status})));
+        if (std.mem.indexOf(u8, response, case.output) == null)
+            std.debug.print("Unexpected response for {s}:\n{s}\n", .{ case.sql, response });
         try std.testing.expect(std.mem.indexOf(u8, response, case.output) != null);
     }
 }

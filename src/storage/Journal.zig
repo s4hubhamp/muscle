@@ -51,7 +51,7 @@ const JournalMetadataPage = extern struct {
 pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Journal {
     const journal_file_path = try std.mem.concat(allocator, u8, &.{ database_file_path, ".journal" });
     defer allocator.free(journal_file_path);
-    logger.info("Opening Journal file.", .{});
+    logger.debug("Opening Journal file.", .{});
     var io = try IO.init(allocator, journal_file_path);
     errdefer io.deinit();
 

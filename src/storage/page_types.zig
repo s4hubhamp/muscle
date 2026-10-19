@@ -45,7 +45,7 @@ pub const DBMetadataPage = extern struct {
 // +--------+-------+------------+------+-----+------+
 //          ^                                        ^
 //          |                                        |
-//          +-----------------------------------------
+//          +-----------------------------------------ni
 //                         Page Content
 //
 // @Todo rename this to DataPage or something other which makes sense for index values also

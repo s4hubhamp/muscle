@@ -81,10 +81,7 @@ const InsertPlan = struct {
     }
 
     pub fn next(self: *@This()) !?muscle.page_types.EncodedCellContent {
-        const table = try if (self.context.catalog.find_table(self.into)) |t|
-            t.clone(self.context.arena)
-        else
-            unreachable;
+        const table = try (self.context.catalog.find_table(self.into).?.clone(self.context.arena));
 
         // If the passed payload size is greater than max content that a single page can hold
         // this will overflow.
@@ -172,7 +169,6 @@ const InsertPlan = struct {
 
         // update metadata
         try self.context.catalog.update_table(self.context.pager, table);
-
         return try serde.serialize(muscle.Value{ .int = 1 }, self.context.arena);
     }
 };
@@ -886,14 +882,14 @@ pub fn resolve_expression(
                     const right_tag = std.meta.activeTag(right);
                     if ((left_tag != .int and left_tag != .real) or
                         (right_tag != .int and right_tag != .real))
-                        {
-                            try context.set_err(
-                                error.IncompatibleTypes,
-                                "Incompatible types for {s} operation. left {s} right {s}",
-                                .{ @tagName(binary.operator), @tagName(left), @tagName(right) },
-                            );
-                            return error.IncompatibleTypes;
-                        }
+                    {
+                        try context.set_err(
+                            error.IncompatibleTypes,
+                            "Incompatible types for {s} operation. left {s} right {s}",
+                            .{ @tagName(binary.operator), @tagName(left), @tagName(right) },
+                        );
+                        return error.IncompatibleTypes;
+                    }
 
                     const left_value = left.to_f64();
                     const right_value = right.to_f64();

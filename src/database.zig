@@ -24,7 +24,7 @@ pub const Muscle = struct {
         errdefer pager.deinit();
 
         // call rollback to sync if we had crashed earlier
-        logger.info("Calling Rollback after instance start.", .{});
+        logger.debug("Calling Rollback after instance start.", .{});
         try pager.rollback();
 
         // rollback could update catalog hence we init it after rollback
@@ -372,18 +372,6 @@ pub const Muscle = struct {
                 curr_page_number = curr_page.next;
             }
         }
-
-        logger.info("\n--------------------------------- DATABASE METADATA ------------------------------\n", .{});
-        logger.info("Total pages: {any}\n", .{metadata.total_pages});
-        logger.info("Free pages: {any}\n", .{metadata.free_pages});
-        logger.info("First free page: {any}\n", .{metadata.first_free_page});
-
-        logger.info("\nFree pages: ", .{});
-        for (free_pages.const_slice()) |page_number| {
-            logger.info("{d} -> ", .{page_number});
-        }
-        logger.info("0\n", .{});
-        logger.info("\n-----------------------------------------------------------------------------------\n", .{});
 
         assert(metadata.free_pages == free_pages.len);
 

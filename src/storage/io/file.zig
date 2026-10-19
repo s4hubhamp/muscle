@@ -23,12 +23,12 @@ pub const IO = struct {
             .{ .mode = .read_write, .lock = .exclusive, .lock_nonblocking = true },
         ) catch |err| sw: switch (err) {
             error.FileNotFound => {
-                logger.info("File not found.", .{});
-                logger.info("Creating new file at {s}.", .{absolute_path});
+                logger.debug("File not found.", .{});
+                logger.debug("Creating new file {s}.", .{absolute_path});
                 // Preserve contents if another opener creates the file first.
                 const file = Io.Dir.createFileAbsolute(io.io(), absolute_path, .{ .read = true, .truncate = false, .lock = .exclusive, .lock_nonblocking = true }) catch |w_err| {
                     logger.err(
-                        "Error occurred while trying to create file at: {s} error: {any}",
+                        "Error occurred while trying to create file {s} error: {any}",
                         .{ absolute_path, w_err },
                     );
                     return w_err;
@@ -63,7 +63,7 @@ pub const IO = struct {
     }
 
     pub fn truncate(self: *IO, page_number: u32) !void {
-        logger.info("Truncated file to position: {}", .{page_offset(page_number)});
+        logger.debug("Truncated file to position: {}", .{page_offset(page_number)});
         try Io.File.setLength(self.file, self.io.io(), page_offset(page_number));
     }
 
