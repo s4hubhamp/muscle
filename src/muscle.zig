@@ -14,6 +14,9 @@ pub const statement = @import("parser/statement.zig");
 pub const planner = @import("planner.zig");
 pub const analyzer = @import("analyzer.zig");
 
+pub const PageType = page_types.PageType;
+pub const Page = page_types._Page;
+
 pub const Table = struct {
     // btree root page
     root: u32,

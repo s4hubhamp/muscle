@@ -8,7 +8,6 @@ const PageManager = muscle.PageManager;
 const page_types = muscle.page_types;
 const Page = page_types.Page;
 const Cell = page_types.Cell;
-const DBMetadataPage = page_types.DBMetadataPage;
 
 const Self = @This();
 
@@ -465,6 +464,14 @@ fn load_siblings(
     }
 }
 
+fn update_left_pointer(self: *Self, page_number: muscle.PageNumber, left: muscle.PageNumber) !void {
+    // Zero marks the end of a sibling chain; page zero contains database metadata.
+    if (page_number == 0) return;
+    var page = try self.context.pager.get_page(Page, page_number);
+    page.left = left;
+    try self.context.pager.update_page(page_number, &page);
+}
+
 fn free_page(self: *Self, page_number: muscle.PageNumber) !void {
     const freeing = try self.context.pager.get_page(Page, page_number);
     if (freeing.left > 0) {
@@ -754,7 +761,7 @@ fn modify_leaf_node(
 
     // if we still have cells we need to create new page
     if (curr < raw_cells.items.len) {
-        const new_page_number = try self.context.pager.alloc_free_page(self.context.catalog.metadata);
+        const new_page_number = try self.context.pager.alloc_free_page(.data_page, self.context.catalog.metadata);
         var new_page = Page.init();
 
         while (curr < raw_cells.items.len) {
@@ -764,21 +771,16 @@ fn modify_leaf_node(
 
         var last_sibling = &siblings.slice()[siblings.len - 1];
         const last_siblings_right_neighbor_page = last_sibling.page.right;
-        var last_siblings_right_neighbor = try self.context.pager.get_page(
-            Page,
-            last_siblings_right_neighbor_page,
-        );
 
         // update pointers
         new_page.right = last_sibling.page.right;
         last_sibling.page.right = new_page_number;
         new_page.left = last_sibling.page_number;
-        last_siblings_right_neighbor.left = new_page_number;
 
         // save
         try self.context.pager.update_page(last_sibling.page_number, &last_sibling.page);
         try self.context.pager.update_page(new_page_number, &new_page);
-        try self.context.pager.update_page(last_siblings_right_neighbor_page, &last_siblings_right_neighbor);
+        try self.update_left_pointer(last_siblings_right_neighbor_page, new_page_number);
 
         change_info.newly_created_page = new_page_number;
     } else {
@@ -787,14 +789,12 @@ fn modify_leaf_node(
             //var last_filled_sibling = &siblings.get(last_filled_sibling_index);
             var last_filled_sibling = &siblings.buffer[last_filled_sibling_index];
             const last_sibling = siblings.get(siblings.len - 1);
-            var page_after_last_sibling = try self.context.pager.get_page(Page, last_sibling.page.right);
 
             last_filled_sibling.page.right = last_sibling.page.right;
-            page_after_last_sibling.left = last_filled_sibling.page_number;
 
             // save
             try self.context.pager.update_page(last_filled_sibling.page_number, &last_filled_sibling.page);
-            try self.context.pager.update_page(last_sibling.page.right, &page_after_last_sibling);
+            try self.update_left_pointer(last_sibling.page.right, last_filled_sibling.page_number);
         }
     }
 
@@ -887,8 +887,8 @@ fn split_internal_root(
         var right = Page.init();
         var new_root = Page.init();
 
-        const left_page_number = try self.context.pager.alloc_free_page(self.context.catalog.metadata);
-        const right_page_number = try self.context.pager.alloc_free_page(self.context.catalog.metadata);
+        const left_page_number = try self.context.pager.alloc_free_page(.data_page, self.context.catalog.metadata);
+        const right_page_number = try self.context.pager.alloc_free_page(.data_page, self.context.catalog.metadata);
 
         // we need to have atleast one cell inside right so our logic is designed for that
         // @Perf: we can probably try to improve the logic and try to distribute such that difference between left's size and right's size is as minimal as possible
@@ -1124,7 +1124,7 @@ fn modify_internal_node(
         // we shouldn't have only have one cell at this point
         assert(raw_cells.items.len - curr > 1);
 
-        const new_page_number = try self.context.pager.alloc_free_page(self.context.catalog.metadata);
+        const new_page_number = try self.context.pager.alloc_free_page(.data_page, self.context.catalog.metadata);
         var new_page = Page.init();
 
         for (curr..raw_cells.items.len - 1) |i| {
@@ -1139,21 +1139,16 @@ fn modify_internal_node(
 
         var last_sibling = &siblings.slice()[siblings.len - 1];
         const last_siblings_right_neighbor_page = last_sibling.page.right;
-        var last_siblings_right_neighbor = try self.context.pager.get_page(
-            Page,
-            last_siblings_right_neighbor_page,
-        );
 
         // update pointers
         new_page.right = last_siblings_right_neighbor_page;
         last_sibling.page.right = new_page_number;
         new_page.left = last_sibling.page_number;
-        last_siblings_right_neighbor.left = new_page_number;
 
         // save both last sibling and new page
         try self.context.pager.update_page(last_sibling.page_number, &last_sibling.page);
         try self.context.pager.update_page(new_page_number, &new_page);
-        try self.context.pager.update_page(last_siblings_right_neighbor_page, &last_siblings_right_neighbor);
+        try self.update_left_pointer(last_siblings_right_neighbor_page, new_page_number);
 
         next_change_info.newly_created_page = new_page_number;
     }
@@ -1161,14 +1156,12 @@ fn modify_internal_node(
     else if (last_filled_sibling_index < siblings.len - 1) {
         var last_filled_sibling = &siblings.buffer[last_filled_sibling_index];
         const last_sibling = siblings.get(siblings.len - 1);
-        var page_after_last_sibling = try self.context.pager.get_page(Page, last_sibling.page.right);
 
         last_filled_sibling.page.right = last_sibling.page.right;
-        page_after_last_sibling.left = last_filled_sibling.page_number;
 
         // save
         try self.context.pager.update_page(last_filled_sibling.page_number, &last_filled_sibling.page);
-        try self.context.pager.update_page(last_sibling.page.right, &page_after_last_sibling);
+        try self.update_left_pointer(last_sibling.page.right, last_filled_sibling.page_number);
     }
 
     return next_change_info;
@@ -1184,8 +1177,8 @@ fn split_leaf_root(
 ) !void {
     var left = Page.init();
     var right = Page.init();
-    const left_page_number = try self.context.pager.alloc_free_page(self.context.catalog.metadata);
-    const right_page_number = try self.context.pager.alloc_free_page(self.context.catalog.metadata);
+    const left_page_number = try self.context.pager.alloc_free_page(.data_page, self.context.catalog.metadata);
+    const right_page_number = try self.context.pager.alloc_free_page(.data_page, self.context.catalog.metadata);
 
     var fill_right = false;
     for (0..root.num_slots) |curr_slot| {

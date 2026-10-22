@@ -1,7 +1,6 @@
 const std = @import("std");
 const muscle = @import("../muscle.zig");
 const page_types = @import("page_types.zig");
-const BufferPoolManager = @import("BufferPoolManager.zig");
 const Journal = @import("Journal.zig");
 const IO = @import("io.zig").IO;
 
@@ -17,23 +16,13 @@ const BoundedArray = muscle.common.BoundedArray;
 
 const logger = std.log.scoped(.page_manager);
 
-// When this count is hit, we will commit before proceeding to next query
-// various data structures below are optmized based on this number. Since this is a
-// small and well known number we've choosen Arrays instead of HashMaps since for smaller
-// number of elements arrays perform better or same as hash maps and we can have
-// *static* allocations.
-pub const MAX_DIRTY_COUNT_BEFORE_COMMIT = 1000;
+// Number of pages to cache
+// pub const MAX_CACHE_SIZE = 16384; // 64MB
+pub const MAX_CACHE_SIZE = 128; //
 
 comptime {
-    // This is important.
-    // cache.put should always be able to evict non dirty pages.
-    // Hence we need to make sure that number of dirty pages are always less than max cached capacity.
-    assert(MAX_DIRTY_COUNT_BEFORE_COMMIT < BufferPoolManager.MAX_CACHE_SIZE);
-}
-
-comptime {
-    // Journal unsaved entries will not go over dirty pages
-    assert(Journal.MAX_JOURNAL_UNSAVED_ENTRIES < MAX_DIRTY_COUNT_BEFORE_COMMIT);
+    // Journal holds some pages in it's cache. Max dirty pages is max capacity journal can hold
+    assert(Journal.MAX_JOURNAL_UNSAVED_ENTRIES <= MAX_CACHE_SIZE);
 }
 
 // PageManager is responsible to manage pages of database file.
@@ -44,50 +33,85 @@ comptime {
 const PageManager = @This();
 
 allocator: std.mem.Allocator,
+
 io: IO,
-cache: BufferPoolManager,
-dirty_pages: BoundedArray(PageNumber, MAX_DIRTY_COUNT_BEFORE_COMMIT),
+
 journal: Journal,
+
+clock_position: usize,
+clock_reference_bits: []?u1,
+page_table: std.AutoHashMap(muscle.PageNumber, struct { index: usize, pinned: bool = false, dirty: bool = false }),
+pages: std.ArrayList(?Frame),
+n_pinned: usize, // both dirty and pinned pages
+
+const Frame = struct {
+    page_number: PageNumber,
+    page: muscle.Page,
+};
 
 pub fn init(database_file_path: []const u8, allocator: std.mem.Allocator) !PageManager {
     logger.debug("Opening Database file.", .{});
     var io = try IO.init(allocator, database_file_path);
     errdefer io.deinit();
-    // try to read metadata page
-    // if we can't read metadata page that means it does not exists (we need to create new metadata page)
-    var metadata_buffer = [_]u8{0} ** PAGE_SIZE;
-    const bytes_read = try io.read(0, &metadata_buffer);
 
-    if (bytes_read == 0) {
-        logger.debug("Initializing metadata for the first time.", .{});
-        const initial_metadata = DBMetadataPage.init();
-        const bytes = try initial_metadata.to_bytes();
-        for (&bytes, 0..bytes.len) |*item, i| metadata_buffer[i] = item.*;
-        _ = try io.write(0, &metadata_buffer);
-    } else {
-        if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
+    const clock_reference_bits = try allocator.alloc(?u1, MAX_CACHE_SIZE);
+    errdefer allocator.free(clock_reference_bits);
+    for (clock_reference_bits) |*bit| {
+        bit.* = null;
     }
 
-    var dirty_pages = BoundedArray(u32, MAX_DIRTY_COUNT_BEFORE_COMMIT){};
-    var cache = try BufferPoolManager.init(allocator);
-    errdefer cache.deinit();
-    // insert metadata page into cache
-    try cache.put(0, metadata_buffer, dirty_pages.const_slice());
+    var page_table: @FieldType(PageManager, "page_table") = .init(allocator);
+    errdefer page_table.deinit();
+    var pages = try std.ArrayList(?Frame).initCapacity(allocator, MAX_CACHE_SIZE);
+    errdefer pages.deinit(allocator);
 
-    // allocator for arrays
-    return PageManager{
+    var journal = try Journal.init(allocator, database_file_path);
+    errdefer journal.deinit();
+
+    var self = PageManager{
         .allocator = allocator,
         .io = io,
-        .dirty_pages = dirty_pages,
-        .cache = cache,
-        .journal = try Journal.init(allocator, database_file_path),
+        .journal = journal,
+        .clock_position = 0,
+        .clock_reference_bits = clock_reference_bits,
+        .page_table = page_table,
+        .pages = pages,
+        .n_pinned = 0,
     };
+
+    try self.load_metadata();
+    return self;
 }
 
 pub fn deinit(self: *PageManager) void {
-    self.cache.deinit();
-    self.journal.io.deinit();
+    self.allocator.free(self.clock_reference_bits);
+    self.page_table.deinit();
+    self.pages.deinit(self.allocator);
+    self.journal.deinit();
     self.io.deinit();
+}
+
+fn load_metadata(self: *PageManager) !void {
+    // try to read metadata page
+    // if we can't read metadata page that means it does not exists (we need to create new metadata page)
+    var buf = [_]u8{0} ** PAGE_SIZE;
+    const bytes_read = try self.io.read(0, &buf);
+
+    if (bytes_read == 0) {
+        logger.debug("Database file is empty. Initializing metadata for the first time.", .{});
+        const initial_metadata = DBMetadataPage.init();
+        const bytes = try initial_metadata.to_bytes();
+        for (&bytes, 0..bytes.len) |*item, i| buf[i] = item.*;
+        _ = try self.io.write(0, &buf);
+    } else if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
+
+    assert(self.pages.items.len == 0); // Should only get called from init()
+    self.pages.appendAssumeCapacity(.{
+        .page_number = 0,
+        .page = .{ .metadata_page = try serde.deserialize_page(DBMetadataPage, &buf) },
+    });
+    try self.page_table.put(0, .{ .index = 0 });
+    self.clock_reference_bits[0] = 1;
 }
 
 // commit gets called when we reach `max_dirty_pages` OR before returning the results to client
@@ -96,33 +120,31 @@ pub fn deinit(self: *PageManager) void {
 // execution_completed tells us that this is the call from execution engine, in which case we need to
 // clear our journal file.
 pub fn commit(self: *PageManager, execution_completed: bool) !void {
-    // for update queries even if query did not update any rows, commit is still
-    // called by execution engine.
-    if (self.dirty_pages.len == 0) {
-        // A partial commit may already have flushed the last dirty page.
-        if (execution_completed) try self.journal.clear();
-        logger.debug("Nothing to commit.\n", .{});
-        return;
-    }
-
     // persist journal
     try self.journal.persist();
 
-    // sort for sequential io
-    std.mem.sort(u32, self.dirty_pages.slice(), {}, comptime std.sort.asc(u32));
-    for (self.dirty_pages.slice()) |page_number| {
-        _ = self.io.write(
-            page_number,
-            // dirty pages will always be inside the cache
-            std.mem.asBytes(self.cache.get(page_number).?),
-        ) catch |io_err| {
-            logger.err("Failed to save page {} during commit.\n", .{page_number});
-            return io_err;
-        };
-    }
+    for (self.pages.items) |frame| {
+        if (frame == null) continue;
 
-    // clear dirty pages
-    self.dirty_pages.clear();
+        const page_number = frame.?.page_number;
+        const info = self.page_table.getPtr(page_number) orelse unreachable;
+        if (info.dirty) {
+            // @todo sequential IO to disk. Should be handled during file write
+            _ = self.io.write(
+                page_number,
+                // dirty pages will always be inside the cache
+                &frame.?.page.to_serialized_bytes(),
+            ) catch |io_err| {
+                logger.err(
+                    "Failed to save a page during commit. page number: {d} error: {any}\n",
+                    .{ page_number, io_err },
+                );
+                return io_err;
+            };
+
+            info.dirty = false;
+        }
+    }
 
     if (execution_completed) try self.journal.clear();
 }
@@ -136,7 +158,20 @@ pub fn rollback(self: *PageManager) !void {
         // https://chatgpt.com/share/67f2613a-19e0-8000-b8a8-af6aa0fa5725
         var results = try self.journal.batch_get_original_pages(offset);
         if (results.n_read == 0) break;
-        for (results.pages[0..results.n_read]) |*item| _ = try self.io.write(item.page_number, &item.page);
+        for (results.pages[0..results.n_read]) |*item| {
+            _ = try self.io.write(item.page_number, &item.page);
+
+            // Cached pages may still contain the changes that were just rolled back
+            //
+            // @todo if we knew the type of page we are rolling back we can simply sync the
+            // page state with cache
+            const removed = self.page_table.fetchRemove(item.page_number);
+            if (removed) |kv| {
+                assert(self.pages.items[kv.value.index] != null);
+                self.pages.items[kv.value.index] = null;
+                self.clock_reference_bits[kv.value.index] = null;
+            }
+        }
         n_reverted += results.n_read;
         if (results.n_read < results.pages.len) break;
         offset += results.n_read;
@@ -146,115 +181,182 @@ pub fn rollback(self: *PageManager) !void {
     if (self.journal.get_first_newly_alloced_page()) |first_newly_alloced| {
         logger.debug("Truncated file to page number: {}\n", .{first_newly_alloced});
         try self.io.truncate(first_newly_alloced);
+        for (self.pages.items, 0..) |*frame, index| {
+            if (frame.*) |cached| {
+                if (cached.page_number >= first_newly_alloced) {
+                    _ = self.page_table.remove(cached.page_number);
+                    frame.* = null;
+                    self.clock_reference_bits[index] = null;
+                }
+            }
+        }
     }
 
-    self.dirty_pages.clear();
     try self.journal.clear();
-    // Cached pages may still contain the changes that were just rolled back.
-    self.cache.cache.clearRetainingCapacity();
     logger.debug("Rollback Completed. Reverted {} pages.", .{n_reverted});
-}
-
-fn mark_dirty(self: *PageManager, page_number: PageNumber) !void {
-    // commit if we reach max dirty pages
-    if (self.dirty_pages.len == self.dirty_pages.capacity()) try self.commit(false);
-    // mark dirty
-    self.dirty_pages.push(page_number);
 }
 
 // update page inside the cache recording it's original state and
 // when we reach max dirty pages capacity then call commit
-pub fn update_page(self: *PageManager, page_number: u32, page_ptr: anytype) !void {
+pub fn update_page(self: *PageManager, page_number: muscle.PageNumber, page: anytype) !void {
     // A following scenario can happen: we've given a page reference to someone but they did not
     // call update page quick enough and in between their page gets evicted.
-    // Hence, we can't always expect the page which we are going to update to be inside cache.
-
-    var is_dirty = false;
-    for (self.dirty_pages.const_slice()) |item| {
-        if (item == page_number) {
-            is_dirty = true;
-            break;
-        }
+    // Hence, we can't always expect the page which we are going to update to be inside our cache.
+    const PageT = comptime switch (@typeInfo(@TypeOf(page))) {
+        .pointer => |p| if (p.size == .one) p.child else @TypeOf(page),
+        else => @TypeOf(page),
+    };
+    const value: PageT = if (comptime @typeInfo(@TypeOf(page)) == .pointer) page.* else page;
+    if (!self.page_table.contains(page_number)) {
+        try self.load(PageT, page_number);
     }
 
-    if (!is_dirty) {
-        const original: *const [4096]u8 = try self.get_page_bytes_from_cache_or_disk(page_number);
-        try self.mark_dirty(page_number);
-
+    const page_info = self.page_table.getPtr(page_number).?;
+    if (!page_info.dirty) {
+        const original_bytes = self.pages.items[page_info.index].?.page.to_serialized_bytes();
         // if some page already dirty we know for sure that it's part of journal
         // if page is not dirty it still can be part of journal.record because we might have
         // updated it during previous partial commit(commit called from PageManager).
         // So it is the job of journal to record conditionally
-        try self.journal.record(page_number, original.*);
+        try self.journal.record(page_number, original_bytes);
+        page_info.dirty = true;
     }
-
-    // update cache with latest version
-    const serialized_bytes: [PAGE_SIZE]u8 = try page_ptr.to_bytes();
-    try self.cache.put(page_number, serialized_bytes, self.dirty_pages.const_slice());
+    self.pages.items[page_info.index].?.page = @unionInit(muscle.Page, @tagName(tag_for(muscle.Page, PageT)), value);
+    self.clock_reference_bits[page_info.index] = 1;
 }
 
-fn get_page_bytes_from_cache_or_disk(self: *PageManager, page_number: u32) !*const [PAGE_SIZE]u8 {
-    const entry = self.cache.get(page_number);
-    if (entry) |e| return e;
+fn tag_for(comptime U: type, comptime T: type) std.meta.Tag(U) {
+    inline for (@typeInfo(U).@"union".fields) |f| {
+        if (f.type == T) return @field(std.meta.Tag(U), f.name);
+    }
+    @compileError("type " ++ @typeName(T) ++ " is not a member of " ++ @typeName(U));
+}
 
-    // load from disk and cache it
-    {
-        var buffer = [_]u8{0} ** PAGE_SIZE;
-        const bytes_read = self.io.read(page_number, &buffer) catch {
-            @panic("Page is not present. The call to fetch invalid page should not have been made.");
-        };
+pub fn get_page(self: *PageManager, comptime T: type, page_number: muscle.PageNumber) !T {
+    if (!self.page_table.contains(page_number)) {
+        try self.load(T, page_number);
+    }
 
-        if (bytes_read == 0) {
-            @panic("Page does not exist on database file.");
+    const info = self.page_table.get(page_number).?;
+    self.clock_reference_bits[info.index] = 1;
+    const page = self.pages.items[info.index].?.page;
+    assert(std.meta.activeTag(page) == tag_for(muscle.Page, T));
+
+    return @field(page, @tagName(tag_for(muscle.Page, T)));
+}
+
+// if page is not inside the cache, loads it and stores inside the cache
+fn load(self: *PageManager, comptime T: type, page_number: muscle.PageNumber) !void {
+    if (self.page_table.get(page_number)) |info| {
+        self.clock_reference_bits[info.index] = 1;
+        return;
+    }
+
+    var buf = [_]u8{0} ** PAGE_SIZE;
+    const bytes_read = self.io.read(page_number, &buf) catch {
+        @panic("Page is not present. The call to fetch invalid page should not have been made.");
+    };
+
+    if (bytes_read == 0) {
+        @panic("Page does not exist on database file.");
+    }
+
+    if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
+
+    const frame = Frame{
+        .page_number = page_number,
+        .page = @unionInit(muscle.Page, @tagName(tag_for(muscle.Page, T)), try serde.deserialize_page(T, &buf)),
+    };
+    try self.cache_frame(frame, false);
+}
+
+fn cache_frame(self: *PageManager, frame: Frame, mark_dirty: bool) !void {
+    // Allocate before choosing a victim so failure preserves all cached mappings.
+    try self.page_table.ensureUnusedCapacity(1);
+    if (self.pages.items.len < MAX_CACHE_SIZE) {
+        try self.pages.ensureUnusedCapacity(self.allocator, 1);
+    }
+    const index = self.next_free_slot() orelse blk: {
+        try self.commit(false);
+        break :blk self.next_free_slot() orelse return error.CacheFull;
+    };
+
+    if (index == self.pages.items.len) {
+        self.pages.appendAssumeCapacity(frame);
+    } else {
+        if (self.pages.items[index]) |victim| {
+            const removed = self.page_table.remove(victim.page_number);
+            assert(removed);
         }
-
-        if (bytes_read != PAGE_SIZE) @panic("Page is corrupted.");
-        try self.cache.put(page_number, buffer, self.dirty_pages.const_slice());
+        self.pages.items[index] = frame;
     }
 
-    return self.cache.get(page_number).?;
+    self.page_table.putAssumeCapacity(frame.page_number, .{
+        .index = index,
+        .dirty = mark_dirty,
+    });
+
+    self.clock_reference_bits[index] = 1;
 }
 
-pub fn get_page(self: *PageManager, comptime T: type, page_number: u32) !T {
-    // deserialize the page inside the cache and return it.
-    // @Perf: This returns a Copy
-    const page_struct = serde.deserialize_page(T, try self.get_page_bytes_from_cache_or_disk(page_number));
-    return page_struct;
+fn next_free_slot(self: *PageManager) ?usize {
+    var idx: ?usize = null;
+    for (self.pages.items, 0..) |page, i| {
+        if (page == null) {
+            idx = i;
+            break;
+        }
+    }
+
+    if (idx == null) {
+        if (self.pages.items.len < MAX_CACHE_SIZE) {
+            idx = self.pages.items.len;
+        } else {
+            // Two passes give every referenced frame one second chance.
+            var scanned: usize = 0;
+            while (scanned < 2 * self.pages.items.len) : (scanned += 1) {
+                const index = self.clock_position;
+                self.clock_position = (index + 1) % self.pages.items.len;
+                const victim = self.pages.items[index].?;
+                const info = self.page_table.get(victim.page_number).?;
+                if (info.pinned or info.dirty) continue;
+
+                if (self.clock_reference_bits[index] == 1) {
+                    self.clock_reference_bits[index] = 0;
+                    continue;
+                }
+
+                idx = index;
+                break;
+            }
+        }
+    }
+
+    return idx orelse null;
 }
 
-// find the available free page or allocate new page on disk and update passed in metadata
-pub fn alloc_free_page(self: *PageManager, metadata: *DBMetadataPage) !u32 {
-    var free_page_number: u32 = undefined;
-
+pub fn alloc_free_page(self: *PageManager, comptime tag: muscle.PageType, metadata: *DBMetadataPage) !muscle.PageNumber {
     if (metadata.first_free_page == 0) {
         //
-        // the idea is to return a free page number from here. later caller will call get_[page_type]
-        // which internally calls `get_page_bytes_from_cache_or_disk` to get the page.
-        // We need to take care of following:
-        // 1. Add this to cache Because the page is totally new we don't have it on disk yet and
-        // `get_page_bytes_from_cache_or_disk` will fail
-        // 2. Mark dirty so it won't get evicted.
-        // 3. consider a scenario where we have allocated a new page at the end.
-        // first cycle of partial commit gets completed.
-        // final cycle fails. During rollback we need to release those new
-        // pages as free to use. For this we need our journal to also tell us
-        // wheather we allocated some new pages at the end of the database file
-        // or used existing pages, and mark those free to use again.
+        // Because the page is not on the disk we need to make sure it's pinned / marked dirty in cache
+        // to make sure it's not evicted.
+        //
 
-        free_page_number = metadata.total_pages;
-        // mark dirty
-        try self.mark_dirty(free_page_number);
-        // put inside the cache
-        try self.cache.put(free_page_number, try FreePage.init().to_bytes(), self.dirty_pages.const_slice());
-        // save to journal
+        const free_page_number = metadata.total_pages;
+        try self.cache_frame(.{ .page_number = free_page_number, .page = muscle.Page.init(tag) }, true);
+        // Save to journal so we can revert in case of rollback
         self.journal.maybe_set_first_newly_alloced_page(free_page_number);
         metadata.total_pages += 1;
         return free_page_number;
     } else {
-        free_page_number = metadata.first_free_page;
+        const free_page_number = metadata.first_free_page;
         const free_page = try self.get_page(FreePage, free_page_number);
         metadata.first_free_page = free_page.next;
         metadata.free_pages -= 1;
+        var new_page = muscle.Page.init(tag);
+        switch (new_page) {
+            inline else => |*payload| try self.update_page(free_page_number, payload),
+        }
         return free_page_number;
     }
 }
@@ -268,7 +370,6 @@ pub fn free(self: *PageManager, metadata: *DBMetadataPage, page_number: PageNumb
     metadata.first_free_page = page_number;
     metadata.free_pages += 1;
 
-    // record the original state inside the journal and mark dirty
     try self.update_page(page_number, &free_page);
 }
 

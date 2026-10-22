@@ -28,6 +28,7 @@ pub const Muscle = struct {
         try pager.rollback();
 
         // rollback could update catalog hence we init it after rollback
+        // Important: This should be called after page.init()
         const catalog = try muscle.Catalog_Manager.init(allocator, &pager);
 
         return Muscle{ .allocator = allocator, .pager = pager, .catalog = catalog };
@@ -248,7 +249,7 @@ pub const Muscle = struct {
             try new_table.columns.put(context.arena, column.name, column);
         }
 
-        const root_page_number = try context.pager.alloc_free_page(context.catalog.metadata);
+        const root_page_number = try context.pager.alloc_free_page(.data_page, context.catalog.metadata);
         // initialize root page
         const root_page = page_types.Page.init();
         try context.pager.update_page(root_page_number, &root_page);
@@ -346,7 +347,9 @@ pub const Muscle = struct {
                 }
 
                 curr_page_number = curr_page.right;
-                curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
+                if (curr_page_number != 0) {
+                    curr_page = try context.pager.get_page(page_types.Page, curr_page_number);
+                }
             }
         }
 

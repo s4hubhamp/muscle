@@ -7,18 +7,20 @@ const logger = std.log.scoped(.journal);
 const assert = std.debug.assert;
 const PAGE_SIZE = muscle.PAGE_SIZE;
 
-pub const MAX_JOURNAL_UNSAVED_ENTRIES = 64;
+pub const MAX_JOURNAL_UNSAVED_ENTRIES = 128;
 
 // Journal stores the original state of pages before update/delete operations
 // If update/delete fails in the middle we can rollback to original state
-// If update/delete complets we clear the journal
+// If update/delete completes we clear the journal
 // Note: create is just a update for some page
 //
 const Journal = @This();
 
 io: IO,
-// unsaved entries
-entries: muscle.common.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES),
+// Keep unsaved page copies on the heap: embedding them makes database init
+// consume large stack frames when Journal and PageManager are returned by value.
+allocator: std.mem.Allocator,
+entries: *muscle.common.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES),
 // this metadata does not contain newer stuff from entries. This is just an already saved stuff
 metadata: JournalMetadataPage,
 
@@ -31,8 +33,7 @@ const JournalMetadataPage = extern struct {
     // zero indicates no allocation
     first_new_alloced_page: u32,
     n_pages: u32,
-    // Inherently array len here becomes max pages one query can modify
-    pages: [1022]u32,
+    pages: [1022]u32, // This also becomes max pages single query can update
 
     comptime {
         assert(@alignOf(JournalMetadataPage) == 4);
@@ -67,11 +68,19 @@ pub fn init(allocator: std.mem.Allocator, database_file_path: []const u8) !Journ
         metadata = JournalMetadataPage.init();
     }
 
+    const entries = try allocator.create(muscle.common.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES));
+    entries.len = 0;
     return Journal{
         .io = io,
-        .entries = muscle.common.BoundedArray(JournalEntry, MAX_JOURNAL_UNSAVED_ENTRIES){},
+        .allocator = allocator,
+        .entries = entries,
         .metadata = metadata,
     };
+}
+
+pub fn deinit(self: *Journal) void {
+    self.allocator.destroy(self.entries);
+    self.io.deinit();
 }
 
 const OriginalPage = struct { page_number: u32, page: [muscle.PAGE_SIZE]u8 };
@@ -153,7 +162,7 @@ pub fn record(self: *Journal, page_number: u32, entry: [muscle.PAGE_SIZE]u8) !vo
 // After we write all the pages then we update the header page saving the
 // metadata of journal file.
 pub fn persist(self: *Journal) !void {
-    if (self.entries.len == 0) return;
+    if (self.entries.len == 0 and self.metadata.first_new_alloced_page == 0) return;
 
     var metadata = &self.metadata;
 

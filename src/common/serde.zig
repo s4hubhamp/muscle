@@ -4,7 +4,7 @@ const muscle = @import("../muscle.zig");
 const assert = std.debug.assert;
 const page_types = muscle.page_types;
 
-pub fn serialize_page(page_struct: anytype) ![muscle.PAGE_SIZE]u8 {
+pub fn serialize_page(page_struct: anytype) [muscle.PAGE_SIZE]u8 {
     comptime {
         if (@sizeOf(@TypeOf(page_struct)) != muscle.PAGE_SIZE)
             @compileError("Struct size must equal PAGE_SIZE");
@@ -12,7 +12,7 @@ pub fn serialize_page(page_struct: anytype) ![muscle.PAGE_SIZE]u8 {
 
     var buffer: [muscle.PAGE_SIZE]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
-    try writer.writeStruct(page_struct, .little);
+    writer.writeStruct(page_struct, .little) catch unreachable;
     return buffer;
 }
 

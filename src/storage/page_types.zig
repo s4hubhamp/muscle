@@ -4,6 +4,38 @@ const muscle = @import("../muscle.zig");
 const assert = std.debug.assert;
 const serde = muscle.common.serde;
 
+// @todo once we rename Page -> DataPage, we can rename below to simply Page
+pub const PageType = enum {
+    metadata_page,
+    data_page,
+    free_page,
+    overflow_page,
+};
+pub const _Page = union(enum) {
+    metadata_page: DBMetadataPage,
+    data_page: Page,
+    free_page: FreePage,
+    overflow_page: OverflowPage,
+
+    pub fn init(tag: PageType) @This() {
+        return switch (tag) {
+            .metadata_page => .{ .metadata_page = DBMetadataPage.init() },
+            .data_page => .{ .data_page = Page.init() },
+            .free_page => .{ .free_page = FreePage.init() },
+            .overflow_page => .{ .overflow_page = OverflowPage.init() },
+        };
+    }
+
+    pub fn to_serialized_bytes(self: @This()) [muscle.PAGE_SIZE]u8 {
+        return switch (self) {
+            .metadata_page => |p| serde.serialize_page(p),
+            .data_page => |p| serde.serialize_page(p),
+            .free_page => |p| serde.serialize_page(p),
+            .overflow_page => |p| serde.serialize_page(p),
+        };
+    }
+};
+
 pub const DBMetadataPage = extern struct {
     total_pages: u32,
     free_pages: u32,
@@ -31,7 +63,7 @@ pub const DBMetadataPage = extern struct {
 
     // return a serialized bytes
     pub fn to_bytes(self: *const DBMetadataPage) ![muscle.PAGE_SIZE]u8 {
-        return try serde.serialize_page(self.*);
+        return serde.serialize_page(self.*);
     }
 };
 
@@ -111,7 +143,7 @@ pub const Page = extern struct {
 
     // return a serialized bytes
     pub fn to_bytes(self: *const Page) ![muscle.PAGE_SIZE]u8 {
-        return try serde.serialize_page(self.*);
+        return serde.serialize_page(self.*);
     }
 
     pub fn free_space(self: *const Page) u16 {
@@ -511,7 +543,7 @@ pub const OverflowPage = extern struct {
 
     // return a serialized bytes
     pub fn to_bytes(self: *const OverflowPage) ![muscle.PAGE_SIZE]u8 {
-        return try serde.serialize_page(self.*);
+        return serde.serialize_page(self.*);
     }
 };
 
@@ -530,7 +562,7 @@ pub const FreePage = extern struct {
 
     // return a serialized bytes
     pub fn to_bytes(self: *const FreePage) ![muscle.PAGE_SIZE]u8 {
-        return try serde.serialize_page(self.*);
+        return serde.serialize_page(self.*);
     }
 };
 

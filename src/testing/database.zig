@@ -519,6 +519,49 @@ test "SQL UPDATE scans safely when growing rows split pages" {
     for (shrunk.data.rows.items) |row| try std.testing.expectEqualSlices(u8, &.{ 1, 4, 0, 't', 'i', 'n', 'y' }, row);
 }
 
+test "create_table rejects duplicate names after closing and reopening the database" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const directory = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(directory);
+    const path = try std.fs.path.join(allocator, &.{ directory, "reopened.db" });
+    defer allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const query_allocator = arena.allocator();
+
+    var original_root: u32 = undefined;
+    var original_page_count: u32 = undefined;
+    for (0..3) |opening| {
+        var db = try muscle.database.Muscle.init(allocator, path);
+        defer db.deinit();
+        if (opening == 0) {
+            try std.testing.expect((try db.execute("create table records (id int primary key, name text(32))", query_allocator)) == .data);
+            try std.testing.expect((try db.execute("insert into records (id, name) values (7, 'saved')", query_allocator)) == .data);
+            original_root = db.catalog.find_table("records").?.root;
+            original_page_count = db.catalog.metadata.total_pages;
+        }
+
+        // A different definition must neither replace the schema nor allocate a root.
+        const duplicate = try db.execute("create table records (other int primary key)", query_allocator);
+        try std.testing.expect(duplicate == .err);
+        try std.testing.expectEqual(error.DuplicateTableName, duplicate.err.code);
+        try std.testing.expectEqual(@as(usize, 1), db.catalog.tables.count());
+        const table = db.catalog.find_table("records").?;
+        try std.testing.expectEqual(original_root, table.root);
+        try std.testing.expectEqual(original_page_count, db.catalog.metadata.total_pages);
+        try std.testing.expect(table.columns.contains("name"));
+        try std.testing.expect(!table.columns.contains("other"));
+        const selected = try db.execute("select name from records where id = 7", query_allocator);
+        try std.testing.expect(selected == .data);
+        try std.testing.expectEqual(@as(usize, 1), selected.rowCount());
+        var expected = BoundedArray(u8, page_types.Page.CONTENT_MAX_SIZE){};
+        try serde.serialize_value(&expected, .{ .txt = "saved" });
+        try std.testing.expectEqualSlices(u8, expected.const_slice(), selected.data.rows.items[0]);
+    }
+}
+
 test "create_table keeps explicit and generated primary keys first" {
     const cases = [_]struct { sql: []const u8, key: []const u8 }{
         .{ .sql = "create table records (id int primary key, name text(32), rank int)", .key = "id" },
@@ -589,8 +632,10 @@ test "QueryResult returns projected schema and encoded rows" {
 
     const created = try db.execute("create table records (id int primary key, name text(32), score real, active bool)", allocator);
     try std.testing.expect(created == .data);
-    try std.testing.expectEqual(@as(usize, 0), created.data.columns.len);
-    try std.testing.expectEqual(@as(usize, 0), created.data.rows.items.len);
+    try std.testing.expectEqual(@as(usize, 1), created.data.columns.len);
+    try std.testing.expectEqualStrings("Status", created.data.columns[0].name);
+    try std.testing.expectEqual(@as(usize, 1), created.data.rows.items.len);
+    try std.testing.expectEqualSlices(u8, try serde.serialize(.{ .txt = "Table created." }, allocator), created.data.rows.items[0]);
 
     // Schema comes from the projection, even before there is any data.
     const sql = "select name, id, score + 1, active, score > 2 from records";
